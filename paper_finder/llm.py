@@ -170,6 +170,34 @@ def suggest_terms(llm: ClaudeClient, description: str, current: Topic | None = N
     )
 
 
+_NEXT_SYSTEM = """\
+You help a researcher fill one concept group (facet) of a PubMed search. Terms in a facet are ORed and each is
+searched in titles and abstracts ([tiab]). Given the topic and the terms the researcher has typed so far for
+one facet, predict the next terms they would most likely add to that facet: synonyms, spelling or hyphenation
+variants, abbreviations, MeSH entry terms, and closely related terms authors write for the same concept.
+Do not repeat any term that is already in the topic. Avoid generic single words that would match unrelated
+fields. Order from most to least useful. All terms in English."""
+
+_NEXT_SCHEMA = {
+    "type": "object",
+    "properties": {"terms": {"type": "array", "items": {"type": "string"}}},
+    "required": ["terms"],
+    "additionalProperties": False,
+}
+
+
+def next_terms(llm: ClaudeClient, topic: Topic, facet: str, typed: list[str], top: int = 8) -> list[str]:
+    """Likely next terms for one facet, given what the researcher has typed so far (for the keyword editor)."""
+    if not typed:
+        return []
+    user = (f"Current search definition:\n{_topic_block(topic)}\n\nFacet being edited: '{facet}'\n"
+            f"Terms typed so far for this facet: {', '.join(typed)}\n\nSuggest up to {top} next terms.")
+    data = llm.json(_NEXT_SYSTEM, user, _NEXT_SCHEMA, effort="low", max_tokens=2000)
+    known = {t.lower() for ts in topic.facets.values() for t in ts}
+    known |= {t.lower() for t in topic.exact_phrases + topic.exclude_phrases + typed}
+    return _clean(data["terms"], known)[:top]
+
+
 # ------------------------------------------------------------------ relevance + summary
 
 _JUDGE_SYSTEM = """\

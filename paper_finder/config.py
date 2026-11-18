@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = ROOT / "config"
@@ -110,10 +110,13 @@ def load_openalex_sources(path: Path = CONFIG_DIR / "openalex_sources.yaml") -> 
 
 
 def load_settings() -> Settings:
-    load_dotenv(ROOT / ".env")
+    # Read .env on every call without copying it into os.environ, so a long-running dashboard picks up keys
+    # saved after it started. A variable set in the real environment (even empty) still wins.
+    file_values = dotenv_values(ROOT / ".env") if (ROOT / ".env").exists() else {}
 
     def get(key: str) -> str | None:
-        return os.getenv(key) or None
+        value = os.environ[key] if key in os.environ else file_values.get(key)
+        return (value or "").strip() or None
 
     return Settings(
         ncbi_api_key=get("NCBI_API_KEY"),

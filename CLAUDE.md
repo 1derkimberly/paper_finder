@@ -18,7 +18,12 @@
   - `ANTHROPIC_API_KEY` 가 없으면 LLM 기능만 꺼지고 나머지는 동작. 모델은 `CLAUDE_MODEL` (기본 claude-opus-5-5)
   - 검증(2026-11-18, claude-sonnet-5-5): 174편 판정, 17편 관련 없음(토양·가스·전자코·열전 등). SPEC §10 기준 4편 모두 관련 있음
   - 판정 기준은 "분야 전반"이다: 생분해가 아니어도 이식형·무선·연성 바이오전자는 관련 있음, 단어가 다른 뜻으로 우연히 걸린 것만 제외 (모든 facet을 요구하면 §10의 Science in-body networking 논문이 빠졌음)
-- Phase 5: 미구현 (자동 업데이트)
+  - 대시보드에는 별도 판정 버튼이 없다. '업데이트 실행' 안에서 자동으로 돈다
+  - 키워드 편집기: 드롭다운 자동완성(수집 논문의 자주 나온 단어·2단어 구), facet 아래 '다음 추천' 칩. facet을 고치면 Claude가 다음 용어를 예상(용어 조합별 세션 캐시), 안 고쳤거나 키가 없으면 `suggest.py`의 문맥 유사도(오프라인, 품질 낮음)
+- Phase 5 (운영): 구현됨 — `update` (전체 주제 업데이트 → Claude 판정 → 신규 논문 리포트 → `runs` 기록), Windows 알림, 작업 스케줄러 주간 등록
+  - 리포트: `reports/<날짜>_<주제>.html|.md`, 직전 성공 업데이트 날짜 이후 `first_seen` 인 논문 (관련 없음 판정 제외). 대시보드 업데이트도 리포트를 쓴다
+  - 검증(2026-11-18): `update transient_bioelectronics --notify` → 리포트 157건(17건 제외), 알림 표시. 스케줄 등록은 사용자 승인 후
+  - Streamlit Cloud 배포(선택)는 안 함
 
 ## 실행
 
@@ -32,6 +37,9 @@ copy .env.example .env   # NCBI_API_KEY, NCBI_EMAIL 채우기 (없어도 동작,
 .\.venv\Scripts\python -m paper_finder enrich                                      # 저장된 모든 논문의 인용 수 갱신
 .\.venv\Scripts\python -m paper_finder judge transient_bioelectronics [--force]   # Claude 관련성 판정 + 요약 (미판정분만)
 .\.venv\Scripts\python -m paper_finder expand --topic transient_bioelectronics "설명"  # Claude 용어 제안 (YAML 출력)
+.\.venv\Scripts\python -m paper_finder update [주제...] [--notify] [--no-llm]          # 전체 업데이트 + 리포트 (주간 자동 실행과 같음)
+.\.venv\Scripts\python -m paper_finder report transient_bioelectronics --since 2026-11-01  # 저장된 데이터로 리포트만
+.\.venv\Scripts\python -m paper_finder schedule install|remove|status [--day MON --at 09:00]  # 작업 스케줄러 (scripts/weekly_update.ps1, 로그는 logs/)
 # search 옵션: --no-openalex (PubMed만), --no-llm (Claude 판정 생략), --quiet (목록 출력 생략)
 .\.venv\Scripts\python -m streamlit run app.py                                   # 대시보드 (http://localhost:8501)
 .\.venv\Scripts\python -m pytest                                                  # 오프라인 단위 테스트 + 앱 스모크 테스트
@@ -51,7 +59,12 @@ paper_finder/
   process.py   dedupe → exclude 필터 → facet 매칭 점수
   db.py        SQLite 스키마 (SPEC §7) 와 upsert
   openalex.py  OpenAlex 클라이언트 (DOI 일괄 조회, 부울 검색, Retry-After 재시도)
-  llm.py       Claude API (구조화 출력 JSON): suggest_terms, judge_papers (10편씩 배치)
+  llm.py       Claude API (구조화 출력 JSON): suggest_terms, next_terms, judge_papers (10편씩 배치)
+  suggest.py   오프라인 키워드 추천 (문맥 유사도) + 자동완성 어휘
+  update.py    Phase 5 업데이트 한 번 = run → judge(최대 300건) → 리포트 → runs 기록 (CLI·대시보드·스케줄 공용)
+  report.py    신규 논문 리포트 HTML/Markdown
+  notify.py    Windows 토스트 알림 (Windows PowerShell 5.1 WinRT, 클릭하면 리포트 열림)
+  schedule.py  작업 스케줄러 등록 (-StartWhenAvailable: 꺼져 있던 주는 켜지면 실행)
   pipeline.py  search → fetch → OpenAlex 보완 → dedupe → filter → score → enrich → store; judge_topic
   cli.py       argparse CLI (`python -m paper_finder`)
   dashboard_data.py  DB → DataFrame, 필터, 지표, 차트용 집계 (Streamlit 비의존, 테스트 대상)
@@ -79,6 +92,8 @@ tests/                 pytest (network 마커는 실제 API 호출)
 - 대시보드에서 키워드를 저장하면 `topics.yaml` 이 다시 쓰여 머리말 외 주석은 사라진다.
 - Claude 판정은 삭제가 아니라 표시다: `topic_papers.llm_verdict` (JSON: relevant·reason·model·date), 요약은 `papers.summary`. 대시보드는 관련 없음 판정을 기본으로 숨기고 토글로 보여준다.
 - 판정은 `llm_verdict IS NULL` 인 링크만 한다 (재검색해도 `link()` 가 판정을 보존). 키워드가 바뀌면 링크가 지워지므로 다시 판정된다.
+- Claude 판정은 업데이트당 최대 `MAX_JUDGE_PER_UPDATE`(300)건, 나머지는 다음 업데이트에서. 결과 1000건 초과면 '키워드가 너무 넓다' 경고 (대시보드 새 주제에서 단어 하나를 정확한 문구로 넣으면 수천 건이 걸림)
+- `.env` 는 `load_settings()` 호출마다 다시 읽고 `os.environ` 에 복사하지 않는다 (대시보드를 켠 채 키를 넣어도 반영). 실제 환경 변수가 있으면(빈 값 포함) 그쪽이 우선
 - Claude 용어 제안은 바로 저장하지 않고 키워드 편집기에 넣기만 한다 (사용자가 '키워드 저장'으로 확정).
 - Claude 호출은 `client.beta.messages.create` + `output_config.format` (JSON 스키마) + 서버 측 fallback(`fallbacks="default"`). 오류는 `LLMError` 로 바꾸고, 판정 중 오류가 나면 거기서 멈추되 저장된 배치는 유지.
 

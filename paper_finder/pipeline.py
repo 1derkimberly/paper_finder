@@ -150,18 +150,23 @@ class JudgeStats:
     judged: int = 0
     rejected: int = 0
     error: str | None = None         # first LLM error; judging stops there (saved batches are kept)
+    skipped: int = 0                 # left for later because of the per-call limit
 
 
 def judge_topic(llm: ClaudeClient, topic: Topic, db_path: Path, force: bool = False, batch_size: int = 10,
-                progress: Callable[[int, int], None] | None = None) -> JudgeStats:
+                progress: Callable[[int, int], None] | None = None, limit: int | None = None) -> JudgeStats:
     """Claude relevance verdict + one-line summary for the topic's papers that have none yet.
-    Rejected papers stay in the DB (the dashboard hides them by default)."""
+    Rejected papers stay in the DB (the dashboard hides them by default). With `limit`, at most that many
+    papers are sent (newest first); the rest wait for the next call (`stats.skipped`)."""
     stats = JudgeStats()
     if not db_path.exists():
         return stats
     conn = db.connect(db_path)
     try:
         rows = db.papers_to_judge(conn, topic.name, force)
+        if limit is not None and len(rows) > limit:
+            stats.skipped = len(rows) - limit
+            rows = sorted(rows, key=lambda r: r["id"], reverse=True)[:limit]
         stats.pending = len(rows)
         for i in range(0, len(rows), batch_size):
             batch = rows[i:i + batch_size]

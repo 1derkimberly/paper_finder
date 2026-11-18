@@ -15,11 +15,14 @@ from paper_finder.dashboard_data import (SORTS, Filters, apply_filters, citation
                                          load_frame, metrics, per_journal, per_year, rejected_mask, sort_frame,
                                          term_frequency)
 from paper_finder.export import to_bibtex, to_csv
-from paper_finder.llm import ClaudeClient, LLMError, suggest_terms
+from paper_finder.llm import ClaudeClient, LLMError, next_terms, suggest_terms
 from paper_finder.openalex import OpenAlexClient, OpenAlexError
-from paper_finder.pipeline import enrich_db, judge_topic, run
+from paper_finder.pipeline import enrich_db
 from paper_finder.pubmed import PubMedClient
+from paper_finder.report import latest_report
+from paper_finder.update import update_topic
 from paper_finder.query import build_query, years_ago
+from paper_finder.suggest import TermIndex, build_index, related_terms, vocabulary
 
 TOPICS_PATH = CONFIG_DIR / "topics.yaml"
 JOURNALS_PATH = CONFIG_DIR / "journals.yaml"
@@ -64,6 +67,16 @@ def cached_frame(topic_name: str, version: int) -> pd.DataFrame:
     return load_frame(DB_PATH, topic_name, load_journals(JOURNALS_PATH))
 
 
+@st.cache_data(show_spinner=False)
+def term_index(topic_name: str, version: int) -> TermIndex:
+    """Word index over the topic's collected papers (Claude-rejected ones left out) for keyword suggestions."""
+    df = cached_frame(topic_name, version)
+    if df.empty:
+        return TermIndex()
+    df = df[~rejected_mask(df)]
+    return build_index((df["title"] + ". " + df["abstract"]).tolist())
+
+
 def data_version() -> int:
     return st.session_state.setdefault("data_version", 0)
 
@@ -92,34 +105,21 @@ def claude_client() -> ClaudeClient | None:
     return ClaudeClient(api_key=s.anthropic_api_key, model=s.claude_model) if s.anthropic_api_key else None
 
 
-def run_judge(topic: Topic, force: bool = False) -> None:
-    """Claude relevance verdict + summary for papers without one. Call inside a status/container."""
-    llm = claude_client()
-    if llm is None:
-        return
-    bar = st.progress(0.0, text="Claude 관련성 판정·요약 중…")
-    stats = judge_topic(llm, topic, DB_PATH, force=force,
-                        progress=lambda d, n: bar.progress(d / n, text=f"Claude 판정 {d}/{n}"))
-    bar.empty()
-    if stats.pending:
-        st.write(f"Claude 판정: {stats.judged}/{stats.pending}건, 관련 없음 {stats.rejected}건 ({llm.model})")
-    if stats.error:
-        st.warning(f"Claude 판정 중단: {stats.error}")
-    bump_data_version()
-
-
 def run_update(topic: Topic, groups: dict[str, list[str]], years: int) -> None:
-    end = date.today()
-    start = years_ago(end, years)
+    """Search + store + Claude check + new-paper report (same steps as the weekly automatic update)."""
     settings = load_settings()
     client = PubMedClient(api_key=settings.ncbi_api_key, email=settings.ncbi_email)
+    llm = claude_client()
     with st.status("PubMed·OpenAlex 검색 중… (OpenAlex가 붐비면 최대 2분)", expanded=True) as status:
-        try:
-            res = run(client, topic, groups, start, end, db_path=DB_PATH,
-                      openalex=openalex_client(), openalex_sources=load_openalex_sources())
-        except Exception as e:  # network / PubMed errors shown to the user
-            status.update(label=f"업데이트 실패: {e}", state="error")
+        bar = st.empty()
+        out = update_topic(topic, groups, DB_PATH, client, openalex=openalex_client(),
+                           openalex_sources=load_openalex_sources(), llm=llm, years=years, trigger="dashboard",
+                           judge_progress=lambda d, n: bar.progress(d / n, text=f"Claude 관련성 판정·요약 {d}/{n}"))
+        bar.empty()
+        if out.error:
+            status.update(label=f"업데이트 실패: {out.error}", state="error")
             return
+        res = out.run
         for g in res.groups:
             st.write(f"**{g.group}**: {g.count}건" + (f" — 경고: {g.warnings}" if g.warnings else ""))
         if res.openalex_found:
@@ -127,15 +127,38 @@ def run_update(topic: Topic, groups: dict[str, list[str]], years: int) -> None:
         st.write(f"저장 {len(res.kept)}건, 제외 {len(res.excluded)}건, 신규 {res.new_count}건")
         if res.enrich:
             st.write(f"OpenAlex DOI 매칭: {res.enrich.matched}/{res.enrich.with_doi} ({res.enrich.rate:.0%})")
-        for w in res.warnings:
+        if out.judge and out.judge.pending:
+            st.write(f"Claude 판정: {out.judge.judged}/{out.judge.pending}건, 관련 없음 {out.judge.rejected}건 "
+                     f"({llm.model})")
+        for w in out.warnings:
             st.warning(w)
         for p, reason in res.excluded:
             st.caption(f"제외 ({reason}): {p.title}")
-        if res.kept:
-            run_judge(topic)
+        st.write(f"신규 논문 리포트: {out.report.count}건 ({out.since} 이후 처음 수집) → `{out.report_path.name}`")
         status.update(label=f"업데이트 완료: {len(res.kept)}건 (신규 {res.new_count}건)",
-                      state="complete" if not res.warnings else "error", expanded=bool(res.warnings))
+                      state="complete" if not out.warnings else "error", expanded=bool(out.warnings))
     bump_data_version()
+
+
+TRIGGER_LABELS = {"dashboard": "대시보드", "cli": "명령줄", "schedule": "자동"}
+
+
+@st.cache_data(show_spinner=False)
+def last_update(topic_name: str, version: int) -> str | None:
+    if not DB_PATH.exists():
+        return None
+    conn = db.connect(DB_PATH)
+    try:
+        r = db.last_run(conn, topic_name, successful=False)
+    finally:
+        conn.close()
+    if r is None:
+        return None
+    when = r["started_at"].replace("T", " ")[:16]
+    how = TRIGGER_LABELS.get(r["trigger"], r["trigger"] or "")
+    if r["error"]:
+        return f"{when} ({how}) — 실패: {r['error'][:80]}"
+    return f"{when} ({how}) — 신규 {r['new_count']}건"
 
 
 def refresh_citations() -> None:
@@ -193,13 +216,15 @@ with st.sidebar:
         run_update(topic, {g: journal_groups[g] for g in sel_groups}, years)
     if st.button("인용 수 갱신", use_container_width=True, help="저장된 모든 논문의 인용 수·OA 링크를 OpenAlex에서 다시 받음"):
         refresh_citations()
-    if load_settings().anthropic_api_key:
-        if st.button("Claude 판정·요약", use_container_width=True,
-                     help="아직 판정하지 않은 논문의 관련성(오탐 여부)과 한 줄 요약을 Claude로 생성"):
-            with st.status("Claude 판정 중…", expanded=True) as jstatus:
-                run_judge(topic)
-                jstatus.update(label="Claude 판정 완료", state="complete")
-    else:
+    last = last_update(topic_name, data_version())
+    if last:
+        st.caption(f"마지막 업데이트: {last}")
+    rep_path = latest_report(topic_name)
+    if rep_path is not None:
+        st.download_button(f"신규 논문 리포트 ({rep_path.name[:10]})", rep_path.read_bytes(), file_name=rep_path.name,
+                           mime="text/html", use_container_width=True,
+                           help="업데이트 때마다 직전 업데이트 이후 새로 수집된 논문을 정리한 HTML 리포트")
+    if not load_settings().anthropic_api_key:
         st.caption("Claude API 키 없음: 오탐 판정·요약·용어 제안이 꺼져 있습니다 (`.env`의 ANTHROPIC_API_KEY).")
     if not load_settings().openalex_api_key:
         st.caption("OpenAlex API 키 없음: 검색이 몰리면 보완 검색이 실패할 수 있습니다 (`.env`의 OPENALEX_API_KEY).")
@@ -215,10 +240,50 @@ def pending_terms(name: str) -> dict:
     return st.session_state.setdefault(f"pending_{name}", {"facets": {}, "exact": [], "exclude": []})
 
 
-def term_select(label: str, base: list[str], extra: list[str], key: str) -> list[str]:
+def term_select(label: str, base: list[str], extra: list[str], key: str, vocab: list[str]) -> list[str]:
+    """Multiselect of terms. `vocab` (frequent words in collected papers) makes the dropdown a type-ahead."""
     st.session_state.setdefault(key, list(base))
-    options = list(dict.fromkeys(base + extra + st.session_state[key]))
-    return st.multiselect(label, options, accept_new_options=True, key=key)
+    options = list(dict.fromkeys(base + extra + st.session_state[key] + vocab))
+    return st.multiselect(label, options, accept_new_options=True, key=key,
+                          placeholder="용어를 입력하면 수집한 논문의 단어가 자동완성됩니다")
+
+
+def add_recommended(select_key: str, pick_key: str) -> None:
+    term = st.session_state.get(pick_key)
+    if term:
+        cur = list(st.session_state.get(select_key, []))
+        if term not in cur:
+            st.session_state[select_key] = cur + [term]
+    st.session_state[pick_key] = None
+
+
+def recommend_next(topic: Topic, facet: str, current: list[str], select_key: str, index: TermIndex) -> None:
+    """'Next term' chips under a facet. After the user edits the facet, Claude predicts the next terms (cached per
+    term set); otherwise, or without a key, words used like these terms in the collected papers are shown."""
+    if not current:
+        return
+    recs, source = [], "수집한 논문 기준"
+    llm = claude_client()
+    if llm is not None and sorted(current) != sorted(topic.facets.get(facet, [])):
+        cache = st.session_state.setdefault("next_terms_cache", {})
+        ck = (topic.name, facet, tuple(sorted(current)))
+        if ck not in cache:
+            try:
+                with st.spinner("Claude가 다음 용어를 예상하는 중…"):
+                    cache[ck] = next_terms(llm, topic, facet, current)
+            except LLMError as e:
+                cache[ck] = []
+                st.caption(f"Claude 추천 실패: {e}")
+        if cache[ck]:
+            recs, source = cache[ck], "Claude"
+    if not recs:
+        known = [t for ts in topic.facets.values() for t in ts] + topic.exact_phrases + topic.exclude_phrases
+        recs = related_terms(index, current, known)
+    recs = [r for r in recs if r not in current]
+    if recs:
+        pick_key = f"rec_{select_key}"
+        st.pills(f"다음 추천 ({source}) · 누르면 추가", recs, selection_mode="single", key=pick_key,
+                 on_change=add_recommended, args=(select_key, pick_key))
 
 
 def apply_suggestion(name: str) -> None:
@@ -244,16 +309,21 @@ def apply_suggestion(name: str) -> None:
 with st.expander("검색 키워드 (facet 안은 OR, facet끼리는 AND)", expanded=False):
     st.caption("체크를 빼거나 새 용어를 입력해 추가한 뒤 저장하세요. 저장 후 '업데이트 실행'을 누르면 새 검색식으로 다시 수집합니다.")
     pend = pending_terms(topic_name)
+    index = term_index(topic_name, data_version())
+    vocab = vocabulary(index)
     new_facets: dict[str, list[str]] = {}
     for facet in list(topic.facets) + [f for f in pend["facets"] if f not in topic.facets]:
+        key = f"facet_{topic_name}_{facet}"
         new_facets[facet] = term_select(facet, topic.facets.get(facet, []), pend["facets"].get(facet, []),
-                                        key=f"facet_{topic_name}_{facet}")
+                                        key=key, vocab=vocab)
+        recommend_next(topic, facet, new_facets[facet], key, index)
     c1, c2 = st.columns(2)
     add_facet_name = c1.text_input("새 facet 이름", key=f"newfacet_name_{topic_name}")
     add_facet_terms = c2.text_input("새 facet 용어 (쉼표로 구분)", key=f"newfacet_terms_{topic_name}")
-    exact = term_select("정확한 문구 (단독으로도 매칭)", topic.exact_phrases, pend["exact"], key=f"exact_{topic_name}")
+    exact = term_select("정확한 문구 (단독으로도 매칭)", topic.exact_phrases, pend["exact"], key=f"exact_{topic_name}",
+                        vocab=vocab)
     exclude = term_select("제외 문구 (수집 후 제목·초록에서 걸러냄)", topic.exclude_phrases, pend["exclude"],
-                          key=f"exclude_{topic_name}")
+                          key=f"exclude_{topic_name}", vocab=vocab)
 
     if add_facet_name.strip() and split_lines(add_facet_terms):
         new_facets[add_facet_name.strip()] = split_lines(add_facet_terms)

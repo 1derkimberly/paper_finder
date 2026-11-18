@@ -41,6 +41,18 @@ CREATE TABLE IF NOT EXISTS topic_papers (
     llm_verdict   TEXT,            -- Phase 4
     PRIMARY KEY (topic_id, paper_id)
 );
+CREATE TABLE IF NOT EXISTS runs (               -- Phase 5: one row per update of a topic
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic       TEXT NOT NULL,
+    started_at  TEXT NOT NULL,      -- ISO datetime
+    finished_at TEXT,
+    trigger     TEXT,               -- 'dashboard' | 'cli' | 'schedule'
+    kept        INTEGER,
+    new_count   INTEGER,
+    rejected    INTEGER,            -- Claude off-topic verdicts among new papers
+    error       TEXT,
+    report_path TEXT
+);
 CREATE TABLE IF NOT EXISTS user_marks (
     paper_id  INTEGER PRIMARY KEY REFERENCES papers(id) ON DELETE CASCADE,
     status    TEXT CHECK (status IN ('to-read', 'read', 'starred')),
@@ -187,6 +199,28 @@ def set_verdict(conn: sqlite3.Connection, topic_id: int, paper_id: int, relevant
                  (json.dumps(verdict, ensure_ascii=False), topic_id, paper_id))
     if summary:
         conn.execute("UPDATE papers SET summary = ? WHERE id = ?", (summary, paper_id))
+
+
+def record_run(conn: sqlite3.Connection, topic: str, started_at: datetime, trigger: str, kept: int | None,
+               new_count: int | None, rejected: int | None = None, error: str | None = None,
+               report_path: str | None = None, finished_at: datetime | None = None) -> int:
+    cur = conn.execute(
+        "INSERT INTO runs (topic, started_at, finished_at, trigger, kept, new_count, rejected, error, report_path) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (topic, started_at.isoformat(timespec="seconds"),
+         (finished_at or datetime.now()).isoformat(timespec="seconds"),
+         trigger, kept, new_count, rejected, error, report_path),
+    )
+    return cur.lastrowid
+
+
+def last_run(conn: sqlite3.Connection, topic: str, successful: bool = True) -> sqlite3.Row | None:
+    """Most recent run of a topic (only runs without an error when `successful`)."""
+    return conn.execute(
+        f"SELECT * FROM runs WHERE topic = ? {'AND error IS NULL' if successful else ''} "
+        "ORDER BY started_at DESC, id DESC LIMIT 1",
+        (topic,),
+    ).fetchone()
 
 
 MARK_STATUSES = ("to-read", "read", "starred")

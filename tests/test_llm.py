@@ -174,6 +174,9 @@ def test_app_suggestion_flow(db_path, monkeypatch):
     monkeypatch.setattr(llm_mod, "suggest_terms", lambda llm, desc, cur: llm_mod.Suggestion(
         facets={"material": ["silk fibroin"], "power": ["wireless power transfer"]},
         exact_phrases=["transient bioelectronics"], exclude_phrases=["pump-probe"], notes="메모"))
+    next_calls = []
+    monkeypatch.setattr(llm_mod, "next_terms",
+                        lambda llm, topic, facet, typed: next_calls.append((facet, tuple(typed))) or ["PLGA"])
     at = AppTest.from_file("../app.py", default_timeout=30).run()
     assert not at.exception, [e.value for e in at.exception]
     at.button(key="suggest_transient_bioelectronics").click().run()
@@ -184,6 +187,15 @@ def test_app_suggestion_flow(db_path, monkeypatch):
     assert "silk fibroin" in values["material"] and "bioresorbable" in values["material"]
     assert values["power"] == ["wireless power transfer"]
     assert "pump-probe" in values["제외 문구 (수집 후 제목·초록에서 걸러냄)"]
+    # edited facets get Claude's "next term" chips (one call per term set, cached across reruns)
+    rec = next(p for p in at.button_group if p.key == "rec_facet_transient_bioelectronics_material")
+    assert "Claude" in rec.label and rec.options == ["PLGA"]
+    n_calls = len(next_calls)
+    rec.set_value("PLGA").run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert "PLGA" in {ms.key: ms.value for ms in at.multiselect}["facet_transient_bioelectronics_material"]
+    assert ("material", tuple(TOPIC.facets["material"] + ["silk fibroin"])) in next_calls
+    assert len(next_calls) == n_calls + 1          # new term set -> one more call
     assert load_topics(CONFIG_DIR / "topics.yaml")["transient_bioelectronics"].to_dict() == TOPIC.to_dict()
 
 

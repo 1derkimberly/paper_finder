@@ -5,12 +5,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import yaml
 
-from paper_finder import db
+from paper_finder import db, schedule
+from paper_finder.notify import notify
+from paper_finder.report import new_papers, write_report
+from paper_finder.update import update_topic
 from paper_finder.config import (CONFIG_DIR, DEFAULT_DB, load_journals, load_openalex_sources, load_settings,
                                  load_topics)
 from paper_finder.llm import ClaudeClient, LLMError, suggest_terms
@@ -57,6 +60,22 @@ def _build_parser() -> argparse.ArgumentParser:
     e = sub.add_parser("expand", help="ask Claude for facet / exact / exclude term suggestions")
     e.add_argument("description", nargs="?", default="", help="free-text description of the topic")
     e.add_argument("--topic", help="existing topic to extend (its terms are sent and not repeated)")
+
+    u = sub.add_parser("update", help="Phase 5: update topics (search + Claude check) and write new-paper reports")
+    u.add_argument("topics_to_update", nargs="*", metavar="topic", help="topics to update (default: all)")
+    u.add_argument("--years", type=int, default=5)
+    u.add_argument("--no-llm", action="store_true", help="skip the Claude relevance check")
+    u.add_argument("--notify", action="store_true", help="show a Windows notification with the new-paper count")
+    u.add_argument("--trigger", default="cli", choices=["cli", "schedule"], help=argparse.SUPPRESS)
+
+    r = sub.add_parser("report", help="write a new-paper report from stored data (no search)")
+    r.add_argument("topic")
+    r.add_argument("--since", type=_parse_date, help="YYYY-MM-DD (default: 7 days ago)")
+
+    sc = sub.add_parser("schedule", help="weekly automatic update via Windows Task Scheduler")
+    sc.add_argument("action", choices=["install", "remove", "status"])
+    sc.add_argument("--day", default="MON", help="MON..SUN (default MON)")
+    sc.add_argument("--at", default="09:00", help="HH:MM (default 09:00)")
 
     sub.add_parser("enrich", help="refresh OpenAlex citation counts / OA links for all stored papers")
     sub.add_parser("topics", help="list configured topics and journal groups")
@@ -191,6 +210,75 @@ def _cmd_expand(args) -> int:
     return 0
 
 
+def _cmd_update(args) -> int:
+    topics = load_topics(args.topics)
+    names = args.topics_to_update or list(topics)
+    unknown = [n for n in names if n not in topics]
+    if unknown:
+        print(f"unknown topic(s): {', '.join(unknown)}. available: {', '.join(topics)}", file=sys.stderr)
+        return 2
+    groups = load_journals(args.journals)
+    settings = load_settings()
+    pubmed = PubMedClient(api_key=settings.ncbi_api_key, email=settings.ncbi_email)
+    llm = None if args.no_llm else _claude_client()
+    print(f"{datetime.now():%Y-%m-%d %H:%M}  update {', '.join(names)}"
+          + ("" if llm else "  (Claude check off)"))
+
+    failed, lines, last_path = 0, [], None
+    for name in names:
+        res = update_topic(topics[name], groups, args.db, pubmed, openalex=_openalex_client(),
+                           openalex_sources=load_openalex_sources(), llm=llm, years=args.years,
+                           trigger=args.trigger)
+        if res.error:
+            failed += 1
+            print(f"[{name}] FAILED: {res.error}")
+            lines.append(f"{name}: 실패")
+            continue
+        rep = res.report
+        print(f"[{name}] stored {len(res.run.kept)} (new in DB {res.run.new_count}); "
+              f"report since {res.since}: {rep.count} new" + (f", {rep.rejected} off-topic hidden" if rep.rejected else ""))
+        if res.judge and res.judge.pending:
+            print(f"   Claude judged {res.judge.judged}/{res.judge.pending}, off-topic {res.judge.rejected}")
+        for w in res.warnings:
+            print(f"   WARNING: {w}")
+        print(f"   report: {res.report_path}")
+        lines.append(f"{name}: 신규 {rep.count}건")
+        last_path = res.report_path
+    if args.notify:
+        title = "Paper Finder 업데이트" + (" (일부 실패)" if failed else "")
+        shown = notify(title, " · ".join(lines), last_path if len(names) == 1 or not failed else None)
+        print("notification shown" if shown else "notification not shown")
+    return 1 if failed else 0
+
+
+def _cmd_report(args) -> int:
+    topics = load_topics(args.topics)
+    if args.topic not in topics:
+        print(f"unknown topic '{args.topic}'", file=sys.stderr)
+        return 2
+    today = date.today()
+    rep = new_papers(args.db, args.topic, load_journals(args.journals), args.since or today - timedelta(days=7), today)
+    path = write_report(rep)
+    print(f"{rep.count} new since {rep.since} ({rep.rejected} off-topic left out) -> {path}")
+    return 0
+
+
+def _cmd_schedule(args) -> int:
+    try:
+        if args.action == "install":
+            schedule.install(args.day, args.at)
+            print(f"registered '{schedule.TASK_NAME}': every {args.day.upper()} {args.at} (runs {schedule.SCRIPT})")
+        elif args.action == "remove":
+            print("removed" if schedule.remove() else "not registered")
+            return 0
+        st = schedule.status()
+        print(st or "not registered")
+    except schedule.ScheduleError as e:
+        print(f"schedule error: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _cmd_enrich(args) -> int:
     if not args.db.exists():
         print(f"no database at {args.db}; run `search` first", file=sys.stderr)
@@ -246,4 +334,5 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     args = _build_parser().parse_args(argv)
     return {"search": _cmd_search, "list": _cmd_list, "enrich": _cmd_enrich, "judge": _cmd_judge,
-            "expand": _cmd_expand, "topics": _cmd_topics}[args.cmd](args)
+            "expand": _cmd_expand, "topics": _cmd_topics, "update": _cmd_update, "report": _cmd_report,
+            "schedule": _cmd_schedule}[args.cmd](args)

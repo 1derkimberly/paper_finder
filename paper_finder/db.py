@@ -103,8 +103,11 @@ _ADDED_COLUMNS = [
 ]
 
 
+PG_SCHEMES = ("postgres://", "postgresql://")
+
+
 def is_postgres(target: DBTarget) -> bool:
-    return isinstance(target, str) and target.startswith(("postgres://", "postgresql://"))
+    return isinstance(target, str) and target.startswith(PG_SCHEMES)
 
 
 def exists(target: DBTarget | None) -> bool:

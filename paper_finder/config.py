@@ -124,6 +124,17 @@ def load_openalex_sources(path: Path = CONFIG_DIR / "openalex_sources.yaml") -> 
     return out
 
 
+def _clean_db_url(value: str | None) -> str | None:
+    """Tolerate copy-paste slips in DATABASE_URL: surrounding quotes / spaces, a SQLAlchemy driver suffix."""
+    if not value:
+        return None
+    v = value.strip().strip("'\"").strip()
+    for drv in ("postgresql+psycopg://", "postgresql+psycopg2://"):
+        if v.startswith(drv):
+            v = "postgresql://" + v[len(drv):]
+    return v or None
+
+
 def load_settings() -> Settings:
     # Read .env on every call without copying it into os.environ, so a long-running dashboard picks up keys
     # saved after it started. A variable set in the real environment (even empty) still wins.
@@ -141,6 +152,6 @@ def load_settings() -> Settings:
         anthropic_api_key=get("ANTHROPIC_API_KEY"),
         claude_model=get("CLAUDE_MODEL"),
         claude_judge_model=get("CLAUDE_JUDGE_MODEL"),
-        database_url=get("DATABASE_URL"),
+        database_url=_clean_db_url(get("DATABASE_URL")),
         admin_emails=tuple(e.strip().lower() for e in (get("ADMIN_EMAILS") or "").split(",") if e.strip()),
     )

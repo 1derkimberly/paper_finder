@@ -44,7 +44,9 @@ def _secrets_to_env() -> None:
 _secrets_to_env()
 TOPICS_PATH = CONFIG_DIR / "topics.yaml"
 JOURNALS_PATH = CONFIG_DIR / "journals.yaml"
-DB_PATH: db.DBTarget = load_settings().database_url or DEFAULT_DB   # Postgres URL when deployed
+_DB_URL = load_settings().database_url
+# Postgres URL when deployed; anything else in DATABASE_URL is a configuration mistake (reported below).
+DB_PATH: db.DBTarget = _DB_URL if (_DB_URL and db.is_postgres(_DB_URL)) else DEFAULT_DB
 NEW_TOPIC = "＋ 새 주제 만들기"
 ADMIN_PAGE = "⚙ 관리 (유지 보수)"
 STATUS_LABELS = {"": "읽지 않음","to-read": "읽을 예정", "read": "읽음", "starred": "★ 즐겨찾기"}
@@ -52,6 +54,12 @@ LABEL_TO_STATUS = {v: k for k, v in STATUS_LABELS.items()}
 PAGE_SIZE = 20
 
 st.set_page_config(page_title="Paper Finder", page_icon="📄", layout="wide")
+
+if _DB_URL and not db.is_postgres(_DB_URL):
+    st.error("DATABASE_URL 설정이 Postgres 연결 주소가 아닙니다. `postgresql://` 로 시작하는 Supabase의 "
+             "**Transaction pooler** 주소(포트 6543, 비밀번호 포함)를 넣어 주세요. "
+             f"지금 값의 시작 부분: `{_DB_URL[:14]}…`")
+    st.stop()
 
 
 # ------------------------------------------------------------------ who is using the app

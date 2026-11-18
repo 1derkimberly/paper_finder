@@ -158,7 +158,7 @@ def test_visitor_tastes_everything_with_limits(tmp_path, monkeypatch):
     assert at.title[0].value == "Zinc Battery"
     suffix = row["name"].rsplit("-", 1)[1]                                     # owner hash stays internal
     assert not any(suffix in str(x.value) for x in [*at.title, *at.caption, *at.markdown])
-    assert "업데이트 실행" in [b.label for b in at.button]                     # own topic: manageable
+    assert "업데이트" in [b.label for b in at.button]                     # own topic: manageable
     assert any("최근 1년" in c.value for c in at.caption)                         # 1-year search limit
     # quota: a second topic is refused
     go(at, NEW)
@@ -172,7 +172,7 @@ def AppTest_rerun(at):
 def test_signed_in_user_keeps_own_marks(tmp_path, monkeypatch):
     _give_topic(tmp_path, "a@x.com")
     at = _app(tmp_path, monkeypatch, "a@x.com", admins="boss@x.com")
-    assert "업데이트 실행" in [b.label for b in at.button] and "로그아웃" in [b.label for b in at.button]
+    assert "업데이트" in [b.label for b in at.button] and "로그아웃" in [b.label for b in at.button]
     assert {m.label: m.value for m in at.metric}["총 논문 수"] == "2"
     sel = next(s for s in at.selectbox if s.key and s.key.startswith("st_"))
     sel.set_value("read").run()
@@ -218,7 +218,7 @@ def test_daily_budget_blocks_visitors_not_admin(tmp_path, monkeypatch):
 
 def test_admin_maintenance_page(tmp_path, monkeypatch):
     at = _app(tmp_path, monkeypatch, "Boss@X.com", admins="boss@x.com")
-    assert "업데이트 실행" in [b.label for b in at.button]
+    assert "업데이트" in [b.label for b in at.button]
     assert any("편집" in e.label for e in at.expander)
     assert not any(m.value == "None" for m in at.markdown)          # no stray magic output
     go(at, ADMIN)
@@ -269,7 +269,7 @@ def test_empty_service_starts_with_new_topic(tmp_path, monkeypatch):
     at = AppTest.from_file("../app.py", default_timeout=30).run()
     assert not at.exception, [e.value for e in at.exception]
     assert menu(at) == [NEW]
-    assert at.title[0].value == "Paper Finder"
+    assert at.title[0].value == "NST Paper Finder"
     assert "구글로 로그인" in [b.label for b in at.button]
 
 

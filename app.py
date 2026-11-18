@@ -55,7 +55,7 @@ STATUS_LABELS = {"": "읽지 않음","to-read": "읽을 예정", "read": "읽음
 LABEL_TO_STATUS = {v: k for k, v in STATUS_LABELS.items()}
 PAGE_SIZE = 20
 
-st.set_page_config(page_title="Paper Finder", page_icon="📄", layout="wide")
+st.set_page_config(page_title="NST Paper Finder", page_icon="📄", layout="wide")
 
 if _DB_URL and not db.is_postgres(_DB_URL):
     st.error("DATABASE_URL 설정이 Postgres 연결 주소가 아닙니다. `postgresql://` 로 시작하는 Supabase의 "
@@ -302,16 +302,6 @@ def cached_report(topic_name: str, version: str, label: str | None = None) -> tu
     return last_update_report(DB_PATH, topic_name, load_journals(JOURNALS_PATH), label=label)
 
 
-def refresh_citations() -> None:
-    with st.spinner("OpenAlex에서 인용 수 갱신 중…"):
-        try:
-            stats = enrich_db(openalex_client(), DB_PATH)
-        except OpenAlexError as e:
-            st.error(str(e))
-            return
-    st.success(f"인용 수 갱신: {stats.matched}/{stats.with_doi}건 ({stats.rate:.0%})")
-    bump_data_version()
-
 
 # ------------------------------------------------------------------ sidebar
 
@@ -345,7 +335,7 @@ st.html("""<style>
 .st-key-topicmenu, .st-key-topicmenu [data-testid="stVerticalBlock"],
 .st-key-topicmenu [data-testid="stHorizontalBlock"] { gap: 0 !important; }
 .st-key-topicmenu button { min-height: 2rem; padding-top: .2rem; padding-bottom: .2rem; justify-content: flex-start; }
-.st-key-topicmenu hr { margin: .35rem 0; }
+.st-key-topicmenu hr { margin: .6rem 0 .85rem; }
 .st-key-topicmenu button > div, .st-key-accountmenu button > div { justify-content: flex-start; width: 100%; }
 [data-testid="stPopoverBody"]:has(.st-key-topicmenu) { min-width: 280px; }
 .st-key-topicmenu [data-testid="stElementContainer"] { margin: 0; }
@@ -371,6 +361,36 @@ def journal_range(groups: list[str]) -> list[str]:
 
 def _go(name: str) -> None:
     st.session_state["selected_topic"] = name
+
+
+def _at_topic_limit() -> bool:
+    limit = ROLE.max_topics(LIMITS)
+    return limit is not None and owned_count() >= limit
+
+
+def _go_new() -> None:
+    """'새 주제 만들기': open the page, or a notice popup when this user's topic quota is used up."""
+    if _at_topic_limit():
+        st.session_state["limit_notice"] = True
+    else:
+        _go(NEW_TOPIC)
+
+
+def _limit_text() -> str:
+    limit = ROLE.max_topics(LIMITS)
+    text = f"{ROLE.label}는 주제를 {limit}개까지 만들 수 있습니다 (현재 {owned_count()}개)."
+    if ROLE.kind == "visitor":
+        text += (f" 방문자 주제는 최근 {LIMITS.visitor_years}년 논문만 모으고 창을 닫으면 사라집니다. "
+                 f"로그인하면 {LIMITS.user_topics}개까지 만들 수 있습니다.")
+    return text
+
+
+@st.dialog("주제를 더 만들 수 없습니다")
+def limit_notice() -> None:
+    st.warning(_limit_text() + " 더 만들 수 없습니다. 주제 메뉴에서 기존 주제 옆 휴지통 아이콘으로 지운 뒤 다시 만들어 주세요.",
+               icon=":material/info:")
+    if ROLE.kind == "visitor" and AUTH:
+        st.button("구글로 로그인", on_click=st.login, type="primary", icon=":material/login:", key="limit_login")
 
 
 def _ask_delete(name: str) -> None:
@@ -407,22 +427,22 @@ if topic_name not in OPTIONS + [MY_PAGE]:
     topic_name = OPTIONS[0]
 
 with st.sidebar:
-    st.markdown("### :material/menu_book: Paper Finder")
-    st.caption("상위 저널 최신 논문 대시보드")
+    st.markdown("<div style='font-size:1.6rem;font-weight:700;line-height:1.2;margin:.2rem 0 .8rem'>"
+                "NST Paper Finder</div>", unsafe_allow_html=True)
     # A dropdown of rows (topic | delete icon): a selectbox cannot hold a button per option.
     st.caption("주제")
     with st.popover(topic_label(topic_name), width="stretch", icon=":material/expand_more:"), \
             st.container(key="topicmenu"):
         for n in topics:
             c1, c2 = st.columns([6, 1], vertical_alignment="center")
-            c1.button(topic_label(n), key=f"pick_{n}", on_click=_go, args=(n,), width="stretch",
-                      type="primary" if n == topic_name else "tertiary")
+            c1.button(f"**{topic_label(n)}**" if n == topic_name else topic_label(n), key=f"pick_{n}",
+                      on_click=_go, args=(n,), width="stretch", type="tertiary")
             if VISIBLE[n].owner == USER_KEY:
                 c2.button("", key=f"delicon_{n}", icon=":material/delete:", type="tertiary", help="주제 삭제",
                           on_click=_ask_delete, args=(n,))
         if topics:
             st.divider()
-        st.button(NEW_TOPIC, key="pick__new", on_click=_go, args=(NEW_TOPIC,), width="stretch", type="tertiary")
+        st.button(NEW_TOPIC, key="pick__new", on_click=_go_new, width="stretch", type="tertiary")
         if IS_ADMIN:
             st.button(ADMIN_PAGE, key="pick__admin", on_click=_go, args=(ADMIN_PAGE,), width="stretch",
                       type="tertiary")
@@ -468,22 +488,15 @@ def sidebar_footer() -> None:
 def new_topic_page() -> None:
     """New topic: describe it in words -> Claude proposes the search terms -> pick -> create."""
     if not topics:
-        st.title("Paper Finder")
+        st.title("NST Paper Finder")
         st.markdown("관심 있는 연구 주제를 문장으로 설명하면 Claude가 검색 키워드를 만들고, 상위 저널의 최신 논문을 "
                     "모아 관련성 판정과 한국어 한 줄 요약까지 붙여 줍니다. 아래에서 첫 주제를 만들어 보세요.")
         st.subheader("새 주제")
     else:
         st.title("새 주제")
-    limit = ROLE.max_topics(LIMITS)
-    if limit is not None:
-        used = owned_count()
-        st.caption(f"{ROLE.label}는 내 주제를 {limit}개까지 만들 수 있습니다 (지금 {used}개)."
-                   + (f" 방문자 주제는 최근 {LIMITS.visitor_years}년 논문만 모으고, 창을 닫으면 사라집니다."
-                      if ROLE.kind == "visitor" else ""))
-        if used >= limit:
-            st.warning("더 만들 수 없습니다. 사이드바 주제 메뉴에서 주제 옆 휴지통 아이콘으로 지우면 새로 만들 수 있습니다."
-                       + (" 로그인하면 더 많이 만들 수 있습니다." if ROLE.kind == "visitor" else ""))
-            return
+    if _at_topic_limit():   # normally caught by the popup from the menu; this covers other ways in
+        st.warning(_limit_text() + " 더 만들 수 없습니다. 주제 메뉴에서 기존 주제 옆 휴지통 아이콘으로 지워 주세요.")
+        return
     llm = claude_client()
     if llm is None:
         st.warning("새 주제는 주제 설명을 보고 Claude가 검색 키워드를 만들어 줍니다. "
@@ -494,7 +507,7 @@ def new_topic_page() -> None:
         return
 
     st.caption("어떤 논문을 찾고 싶은지 문장으로 설명하면 Claude가 검색 키워드(개념 그룹·정확한 문구·제외 문구)를 제안합니다. "
-               "고른 키워드로 주제를 만든 뒤 사이드바의 **업데이트 실행**으로 논문을 수집합니다.")
+               "고른 키워드로 주제를 만든 뒤 사이드바의 **업데이트**으로 논문을 수집합니다.")
     # A form sends what is typed when the button is pressed, so the button works right away
     # (a plain text_area only reports its value after focus leaves it).
     with st.form("nt_form", border=False):
@@ -783,6 +796,8 @@ with corner.container(key="accountbar"):
 
 if pending_delete := st.session_state.get("ask_delete"):
     confirm_delete(pending_delete)
+elif st.session_state.pop("limit_notice", False):
+    limit_notice()
 
 if topic_name in (NEW_TOPIC, ADMIN_PAGE, MY_PAGE):
     with st.sidebar:
@@ -805,12 +820,10 @@ with st.sidebar:
         else:
             years = 1
             st.caption(f"기간: 최근 {years}년 (방문자 맛보기 제한)")
-        if st.button("업데이트 실행", type="primary", width="stretch", disabled=not sel_groups,
-                     icon=":material/sync:", help="검색 → 저장 → Claude 관련성 판정·요약 → 신규 논문 리포트"):
+        if st.button("업데이트", type="primary", width="stretch", disabled=not sel_groups,
+                     icon=":material/sync:",
+                     help="검색 → 저장 → 인용 수·무료 전문 갱신(OpenAlex) → Claude 관련성 판정·요약 → 신규 논문 리포트"):
             run_update(topic, {g: journal_groups[g] for g in sel_groups}, years)
-        if st.button("인용 수 갱신", width="stretch", icon=":material/format_quote:",
-                     help="저장된 모든 논문의 인용 수·OA 링크를 OpenAlex에서 다시 받음"):
-            refresh_citations()
     else:
         sel_groups, years = list(journal_groups), min(5, MAX_YEARS)
 
@@ -918,7 +931,7 @@ def apply_suggestion(name: str) -> None:
 def keyword_editor() -> None:
     """Admin only: edit / save the topic's search keywords, with Claude and offline suggestions."""
     with st.expander("검색 키워드 편집 (facet 안은 OR, facet끼리는 AND)", expanded=False, icon=":material/tune:"):
-        st.caption("체크를 빼거나 새 용어를 입력해 추가한 뒤 저장하세요. 저장 후 '업데이트 실행'을 누르면 새 검색식으로 다시 수집합니다.")
+        st.caption("체크를 빼거나 새 용어를 입력해 추가한 뒤 저장하세요. 저장 후 '업데이트'을 누르면 새 검색식으로 다시 수집합니다.")
         pend = pending_terms(topic_name)
         index = term_index(topic_name, data_version())
         vocab = vocabulary(index)
@@ -953,7 +966,7 @@ def keyword_editor() -> None:
                 st.error(str(e))
             else:
                 st.session_state.pop(f"pending_{topic_name}", None)
-                st.success("저장했습니다. '업데이트 실행'으로 다시 수집하세요.")
+                st.success("저장했습니다. '업데이트'으로 다시 수집하세요.")
                 st.rerun()
 
         st.divider()
@@ -1015,7 +1028,7 @@ df_all = cached_frame(topic_name, data_version(), USER_KEY)
 if df_all.empty:
     with st.container(border=True):
         st.markdown("#### 아직 수집한 논문이 없습니다")
-        st.caption("사이드바의 **업데이트 실행**을 누르면 PubMed·OpenAlex에서 논문을 모으고, "
+        st.caption("사이드바의 **업데이트**을 누르면 PubMed·OpenAlex에서 논문을 모으고, "
                    "Claude가 주제와 관련 있는지 판정해 한국어 요약을 붙입니다.")
     st.stop()
 

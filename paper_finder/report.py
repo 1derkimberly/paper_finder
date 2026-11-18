@@ -25,6 +25,11 @@ class Report:
     papers: pd.DataFrame          # new, not rejected by Claude; best first
     rejected: int                 # new papers Claude judged off-topic (left out)
     total: int                    # all papers stored for the topic
+    label: str | None = None      # name shown to people (stored IDs of user topics carry an owner hash)
+
+    @property
+    def shown(self) -> str:
+        return self.label or self.topic
 
     @property
     def count(self) -> int:
@@ -64,7 +69,7 @@ def _authors(authors: list[str]) -> str:
 
 
 def to_markdown(rep: Report) -> str:
-    lines = [f"# {rep.topic} 신규 논문 리포트", "",
+    lines = [f"# {rep.shown} 신규 논문 리포트", "",
              f"{rep.since} ~ {rep.today} 사이에 처음 수집된 논문 **{rep.count}건**"
              + (f" (Claude가 관련 없다고 판정한 {rep.rejected}건 제외)" if rep.rejected else "")
              + f" · 전체 저장 {rep.total}건", ""]
@@ -133,8 +138,8 @@ def to_html(rep: Report) -> str:
            + f" · 전체 저장 {rep.total}건")
     return (f"<!doctype html><html lang=\"ko\"><head><meta charset=\"utf-8\">"
             f"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-            f"<title>{e(rep.topic)} 신규 논문</title><style>{_CSS}</style></head><body><main>"
-            f"<h1>{e(rep.topic)} 신규 논문</h1><p class=\"sub\">{sub}</p>{body}</main></body></html>")
+            f"<title>{e(rep.shown)} 신규 논문</title><style>{_CSS}</style></head><body><main>"
+            f"<h1>{e(rep.shown)} 신규 논문</h1><p class=\"sub\">{sub}</p>{body}</main></body></html>")
 
 
 def write_report(rep: Report, out_dir: Path = REPORTS_DIR) -> Path:
@@ -147,8 +152,8 @@ def write_report(rep: Report, out_dir: Path = REPORTS_DIR) -> Path:
     return path
 
 
-def last_update_report(target: db.DBTarget, topic: str,
-                       journal_groups: dict[str, list[str]]) -> tuple[str, bytes] | None:
+def last_update_report(target: db.DBTarget, topic: str, journal_groups: dict[str, list[str]],
+                       label: str | None = None) -> tuple[str, bytes] | None:
     """Report of the last successful update, rebuilt from the database (a deployed app keeps no files):
     papers first stored since the update before it. Returns (file name, HTML bytes)."""
     if not db.exists(target):
@@ -164,7 +169,8 @@ def last_update_report(target: db.DBTarget, topic: str,
     today = date.fromisoformat(runs[0]["started_at"][:10])
     since = date.fromisoformat(runs[1]["started_at"][:10]) if len(runs) > 1 else today - timedelta(days=7)
     rep = new_papers(target, topic, journal_groups, since, today)
-    return f"{today.isoformat()}_{topic}.html", to_html(rep).encode("utf-8")
+    rep.label = label
+    return f"{today.isoformat()}_{rep.shown}.html", to_html(rep).encode("utf-8")
 
 
 def latest_report(topic: str, out_dir: Path = REPORTS_DIR) -> Path | None:

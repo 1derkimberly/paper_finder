@@ -255,6 +255,7 @@ def run_update(topic: Topic, groups: dict[str, list[str]], years: int) -> None:
 
 
 def delete_topic(name: str) -> None:
+    shown = (INFOS[name].title if name in INFOS else None) or name
     removed = 0
     if db.exists(DB_PATH):
         conn = db.connect(DB_PATH)
@@ -267,7 +268,7 @@ def delete_topic(name: str) -> None:
     for k in [k for k in st.session_state if str(k).endswith(f"_{name}") or f"_{name}_" in str(k)]:
         del st.session_state[k]
     st.session_state.pop("selected_topic", None)
-    st.session_state["deleted_msg"] = f"'{name}' 주제를 삭제했습니다 (어느 주제에도 속하지 않게 된 논문 {removed}건 삭제)."
+    st.session_state["deleted_msg"] = f"'{shown}' 주제를 삭제했습니다 (어느 주제에도 속하지 않게 된 논문 {removed}건 삭제)."
     bump_data_version()
     st.rerun()
 
@@ -294,9 +295,9 @@ def last_update(topic_name: str, version: str) -> str | None:
 
 
 @st.cache_data(show_spinner=False)
-def cached_report(topic_name: str, version: str) -> tuple[str, bytes] | None:
+def cached_report(topic_name: str, version: str, label: str | None = None) -> tuple[str, bytes] | None:
     """(file name, HTML) of the new-paper report of the last update, built from the database."""
-    return last_update_report(DB_PATH, topic_name, load_journals(JOURNALS_PATH))
+    return last_update_report(DB_PATH, topic_name, load_journals(JOURNALS_PATH), label=label)
 
 
 def refresh_citations() -> None:
@@ -661,7 +662,7 @@ with st.sidebar:
     st.divider()
     last = last_update(topic_name, data_version())
     st.caption(f":material/schedule: 마지막 업데이트  \n{last}" if last else ":material/schedule: 아직 업데이트하지 않음")
-    report = cached_report(topic_name, data_version())
+    report = cached_report(topic_name, data_version(), topic_label(topic_name))
     if report is not None:
         name, html_bytes = report
         st.download_button(f"신규 논문 리포트 ({name[:10]})", html_bytes, file_name=name, mime="text/html",
@@ -678,12 +679,13 @@ with st.sidebar:
         st.divider()
         with st.popover("주제 삭제", width="stretch", icon=":material/delete:"):
             n_stored = len(cached_frame(topic_name, data_version(), USER_KEY))
-            st.markdown(f"**{topic_name}** 주제를 지웁니다.")
+            shown = topic_label(topic_name)
+            st.markdown(f"**{shown}** 주제를 지웁니다.")
             st.caption(f"검색 키워드와 저장된 논문 {n_stored}건의 연결, 업데이트 기록이 삭제되며 되돌릴 수 없습니다. "
                        "다른 주제에도 속한 논문과 읽음 상태·메모를 단 논문은 남습니다.")
             confirm = st.text_input("확인을 위해 주제 이름을 그대로 입력하세요", key=f"del_confirm_{topic_name}",
-                                    placeholder=topic_name)
-            if st.button("삭제", type="primary", disabled=confirm.strip() != topic_name, key=f"del_{topic_name}"):
+                                    placeholder=shown)
+            if st.button("삭제", type="primary", disabled=confirm.strip() != shown, key=f"del_{topic_name}"):
                 delete_topic(topic_name)
 
     sidebar_footer()
@@ -696,8 +698,9 @@ def pretty_name(name: str) -> str:
     return " ".join(w[:1].upper() + w[1:] for w in name.replace("-", "_").split("_") if w)
 
 
-st.title(pretty_name(topic_name))
-st.caption(f"`{topic_name}` · 개념 그룹 {len(topic.facets)}개"
+SHOWN_NAME = topic_label(topic_name)   # stored IDs of non-admin topics carry an owner hash; never show it
+st.title(pretty_name(SHOWN_NAME))
+st.caption(f"`{SHOWN_NAME}` · 개념 그룹 {len(topic.facets)}개"
            + (f" · 정확한 문구 {len(topic.exact_phrases)}개" if topic.exact_phrases else "")
            + f" · 최근 {years}년 · 저널 그룹 {len(sel_groups)}개")
 
@@ -1038,9 +1041,9 @@ with tab_papers:
     v1, v2, v3, v4 = st.columns([2.2, 1.4, 0.9, 0.9], vertical_alignment="bottom")
     view = v1.segmented_control("보기", ["카드", "표"], default="카드", label_visibility="collapsed")
     sort_by = v2.selectbox("정렬", list(SORTS), index=list(SORTS).index("최신순"), label_visibility="collapsed")
-    v3.download_button("CSV", to_csv(df), file_name=f"{topic_name}.csv", mime="text/csv", width="stretch",
+    v3.download_button("CSV", to_csv(df), file_name=f"{SHOWN_NAME}.csv", mime="text/csv", width="stretch",
                        icon=":material/download:")
-    v4.download_button("BibTeX", to_bibtex(df), file_name=f"{topic_name}.bib", mime="application/x-bibtex",
+    v4.download_button("BibTeX", to_bibtex(df), file_name=f"{SHOWN_NAME}.bib", mime="application/x-bibtex",
                        width="stretch", icon=":material/download:")
     df = sort_frame(df, sort_by)
 

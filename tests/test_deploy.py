@@ -154,7 +154,9 @@ def test_visitor_tastes_everything_with_limits(tmp_path, monkeypatch):
     row = conn.execute("SELECT name, owner, title FROM topic_defs WHERE owner LIKE 'anon:%'").fetchone()
     conn.close()
     assert row["title"] == "zinc_battery" and row["name"].startswith("zinc_battery-")
-    assert at.title[0].value == "Zinc Battery" or "zinc" in at.title[0].value.lower()
+    assert at.title[0].value == "Zinc Battery"
+    suffix = row["name"].rsplit("-", 1)[1]                                     # owner hash stays internal
+    assert not any(suffix in str(x.value) for x in [*at.title, *at.caption, *at.markdown])
     assert "업데이트 실행" in [b.label for b in at.button]                     # own topic: manageable
     assert any("최근 1년" in c.value for c in at.caption)                         # 1-year search limit
     # quota: a second topic is refused

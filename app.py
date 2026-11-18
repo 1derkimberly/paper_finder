@@ -319,8 +319,8 @@ def cached_infos(version: str) -> dict[str, TopicInfo]:
 
 
 INFOS: dict[str, TopicInfo] = cached_infos(data_version())
-# Public (admin) topics for everyone + the user's own; the admin sees every topic.
-VISIBLE = {n: i for n, i in INFOS.items() if IS_ADMIN or i.is_public or i.owner == USER_KEY}
+# Everyone (the admin included) sees only their own topics; the admin reaches others' from the 관리 screen.
+VISIBLE = {n: i for n, i in INFOS.items() if i.owner == USER_KEY}
 topics = {n: i.topic for n, i in VISIBLE.items()}
 journal_groups = load_journals(JOURNALS_PATH)
 if msg := st.session_state.pop("deleted_msg", None):
@@ -331,13 +331,7 @@ def topic_label(name: str) -> str:
     if name in (NEW_TOPIC, ADMIN_PAGE):
         return name
     info = VISIBLE[name]
-    label = info.title or name
-    if info.owner == USER_KEY and not info.is_public:
-        return f"{label} · 내 주제"
-    if IS_ADMIN and not info.is_public:
-        who = "방문자" if info.is_visitor else info.owner
-        return f"{label} · {who}"
-    return label
+    return info.title or name
 
 
 def owned_count() -> int:
@@ -558,7 +552,7 @@ def admin_page() -> None:
             "SELECT topic, MAX(started_at) AS t FROM runs WHERE error IS NULL GROUP BY topic")}
         table = pd.DataFrame([{
             "주제": i.title or n, "ID": n,
-            "소유": "공개(관리자)" if i.is_public else ("방문자" if i.is_visitor else i.owner),
+            "소유": "관리자" if i.is_public else ("방문자" if i.is_visitor else i.owner),
             "만든 날": (i.created_at or "")[:10], "논문": counts.get(n, 0),
             "마지막 업데이트": (last_runs.get(n) or "").replace("T", " ")[:16],
         } for n, i in INFOS.items()])
@@ -644,8 +638,7 @@ with st.sidebar:
 
     topic = topics[topic_name]
     st.session_state["selected_topic"] = topic_name
-    # Admin manages every topic; others manage only their own (public topics are read-only for them).
-    CAN_MANAGE = IS_ADMIN or (VISIBLE[topic_name].owner == USER_KEY and not VISIBLE[topic_name].is_public)
+    CAN_MANAGE = VISIBLE[topic_name].owner == USER_KEY   # only own topics are listed, so always true
     MAX_YEARS = ROLE.max_years(LIMITS)
 
     if CAN_MANAGE:

@@ -131,14 +131,21 @@ def _create(at, desc="녹는 배터리"):
     assert not at.exception, [e.value for e in at.exception]
 
 
+def _give_topic(tmp_path, owner):
+    """Hand the fixture topic (with its 2 papers) to `owner`."""
+    path = tmp_path / "t.db"
+    if not path.exists():
+        _fill(path)
+    conn = db.connect(path)
+    with conn:
+        conn.execute("UPDATE topic_defs SET owner = ? WHERE name = ?", (owner, TOPIC.name))
+    conn.close()
+
+
 def test_visitor_tastes_everything_with_limits(tmp_path, monkeypatch):
     at = _app(tmp_path, monkeypatch, "")
-    labels = [b.label for b in at.button]
-    assert "업데이트 실행" not in labels and "구글로 로그인" in labels            # public topic: read-only
-    assert any("맛보기" in i.value for i in at.info)
-    assert "⚙ 관리 (유지 보수)" not in at.sidebar.selectbox[0].options
-    assert any("검색 키워드 보기" in e.label for e in at.expander)
-    assert {m.label: m.value for m in at.metric}["총 논문 수"] == "2"
+    assert at.sidebar.selectbox[0].options == ["＋ 새 주제 만들기"]        # the admin's topic is not shown
+    assert "구글로 로그인" in [b.label for b in at.button]
 
     _suggest(monkeypatch)
     at = AppTest_rerun(at)
@@ -160,8 +167,10 @@ def AppTest_rerun(at):
 
 
 def test_signed_in_user_keeps_own_marks(tmp_path, monkeypatch):
+    _give_topic(tmp_path, "a@x.com")
     at = _app(tmp_path, monkeypatch, "a@x.com", admins="boss@x.com")
-    assert "업데이트 실행" not in [b.label for b in at.button] and "로그아웃" in [b.label for b in at.button]
+    assert "업데이트 실행" in [b.label for b in at.button] and "로그아웃" in [b.label for b in at.button]
+    assert {m.label: m.value for m in at.metric}["총 논문 수"] == "2"
     sel = next(s for s in at.selectbox if s.key and s.key.startswith("st_"))
     sel.set_value("read").run()
     assert not at.exception, [e.value for e in at.exception]
@@ -169,6 +178,7 @@ def test_signed_in_user_keeps_own_marks(tmp_path, monkeypatch):
     rows = conn.execute("SELECT user_id, status FROM user_marks").fetchall()
     conn.close()
     assert [(r["user_id"], r["status"]) for r in rows] == [("a@x.com", "read")]
+    _give_topic(tmp_path, "c@x.com")
     at2 = _app(tmp_path, monkeypatch, "c@x.com", admins="boss@x.com")
     assert all(s.value == "" for s in at2.selectbox if s.key and s.key.startswith("st_"))
 
@@ -180,8 +190,12 @@ def test_user_topic_limit_and_privacy(tmp_path, monkeypatch):
         _create(at.run())
     at.sidebar.selectbox[0].set_value("＋ 새 주제 만들기").run()
     assert any("더 만들 수 없습니다" in w.value for w in at.warning)
+    assert len(at.sidebar.selectbox[0].options) == 4                          # own 3 + 새 주제
     other = _app(tmp_path, monkeypatch, "c@x.com", admins="boss@x.com")
-    assert other.sidebar.selectbox[0].options == ["transient_bioelectronics", "＋ 새 주제 만들기"]
+    assert other.sidebar.selectbox[0].options == ["＋ 새 주제 만들기"]      # neither a@x.com's nor the admin's
+    admin = _app(tmp_path, monkeypatch, "boss@x.com", admins="boss@x.com")
+    assert admin.sidebar.selectbox[0].options == ["transient_bioelectronics", "＋ 새 주제 만들기",
+                                                  "⚙ 관리 (유지 보수)"]
 
 
 def test_daily_budget_blocks_visitors_not_admin(tmp_path, monkeypatch):

@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from paper_finder import db, update as update_mod
-from paper_finder.config import CONFIG_DIR, load_topics
+from paper_finder.config import load_topics
+from conftest import FIXTURE_TOPICS
 from paper_finder.notify import toast_xml
 from paper_finder.pipeline import RunResult
 from paper_finder.process import process
@@ -16,7 +17,7 @@ from paper_finder.schedule import ScheduleError, install_script
 from paper_finder.suggest import build_index, related_terms, vocabulary
 from paper_finder.update import report_since, update_topic
 
-TOPIC = load_topics(CONFIG_DIR / "topics.yaml")["transient_bioelectronics"]
+TOPIC = load_topics(FIXTURE_TOPICS)["transient_bioelectronics"]
 GROUPS = {"tier1_general": ["Nature", "Sci Adv"]}
 
 TEXTS = [
@@ -151,6 +152,99 @@ def test_cli_update_and_report(tmp_path, monkeypatch, capsys):
     assert rc == 0 and "1 new" in out and "notification shown" in out
     rc = cli.main(["--db", str(db_path), "report", "transient_bioelectronics", "--since", "2020-01-01"])
     assert rc == 0 and "1 new since 2020-01-01" in capsys.readouterr().out
+
+
+def test_app_new_topic_starts_with_claude(tmp_path, monkeypatch):
+    """New topic: description -> Claude suggestion -> deselect a term -> create."""
+    import shutil
+
+    from streamlit.testing.v1 import AppTest
+
+    import paper_finder.config as cfg
+    import paper_finder.llm as llm_mod
+    for f in ("topics.yaml", "journals.yaml"):
+        shutil.copy(cfg.CONFIG_DIR / f, tmp_path / f)
+    monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "DEFAULT_DB", tmp_path / "t.db")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-used")
+    seen = {}
+
+    def fake_suggest(llm, desc, cur):
+        seen["desc"] = desc
+        return llm_mod.Suggestion(facets={"material": ["biodegradable", "transient"], "power": ["battery"]},
+                                  exact_phrases=["transient battery"], exclude_phrases=["battery life"],
+                                  notes="메모", name="transient_battery_power")
+    monkeypatch.setattr(llm_mod, "suggest_terms", fake_suggest)
+
+    at = AppTest.from_file("../app.py", default_timeout=30).run()
+    at.sidebar.selectbox[0].set_value("＋ 새 주제 만들기").run()
+    assert not at.exception, [e.value for e in at.exception]
+    at.text_area(key="nt_desc").input("녹는 배터리").run()
+    assert not any("직접" in e.label for e in at.expander)          # no manual keyword entry
+    next(b for b in at.button if b.label == "Claude 용어 제안 받기").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert seen["desc"] == "녹는 배터리"
+    assert at.text_input(key="nt_name").value == "transient_battery_power"
+    at.button_group(key="nt_pick_material").set_value(["biodegradable"]).run()
+    next(b for b in at.button if b.label == "이 키워드로 주제 만들기").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    t = load_topics(tmp_path / "topics.yaml")["transient_battery_power"]
+    assert t.facets == {"material": ["biodegradable"], "power": ["battery"]}
+    assert t.exact_phrases == ["transient battery"] and t.exclude_phrases == ["battery life"]
+    assert at.title[0].value == "Transient Battery Power"
+
+
+def test_delete_topic_db_and_yaml(tmp_path):
+    from paper_finder.config import Topic, remove_topic, save_topic
+
+    other = Topic(name="other", facets={}, exact_phrases=["bioresorbable wireless implant"])
+    path = tmp_path / "t.db"
+    conn = db.connect(path)
+    with conn:
+        tid, oid = db.upsert_topic(conn, TOPIC), db.upsert_topic(conn, other)
+        ids = {}
+        for p in (GOOD, LASER, _paper("3", "Bioresorbable marked implant", "transient electronics implant")):
+            s = process([p], TOPIC)[0][0]
+            ids[p.pmid], _ = db.upsert_paper(conn, s)
+            db.link(conn, tid, ids[p.pmid], s)
+        db.link(conn, oid, ids["1"], s)                       # paper 1 also belongs to 'other'
+        db.set_mark(conn, ids["3"], "starred", None)          # paper 3 is marked by the user
+        db.record_run(conn, TOPIC.name, __import__("datetime").datetime.now(), "cli", 3, 3)
+        assert db.delete_topic(conn, TOPIC.name) == 1         # only the laser paper is gone
+    assert db.topic_papers(conn, TOPIC.name) == [] and db.last_run(conn, TOPIC.name) is None
+    left = {r["pmid"] for r in conn.execute("SELECT pmid FROM papers")}
+    assert left == {"1", "3"} and len(db.topic_papers(conn, "other")) == 1
+    conn.close()
+
+    yml = tmp_path / "topics.yaml"
+    save_topic(TOPIC, yml)
+    save_topic(other, yml)
+    assert remove_topic(TOPIC.name, yml) and not remove_topic(TOPIC.name, yml)
+    assert list(load_topics(yml)) == ["other"]
+
+
+def test_app_delete_topic(tmp_path, monkeypatch):
+    import shutil
+
+    from streamlit.testing.v1 import AppTest
+
+    import paper_finder.config as cfg
+    for f in ("topics.yaml", "journals.yaml"):
+        shutil.copy(cfg.CONFIG_DIR / f, tmp_path / f)
+    monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "DEFAULT_DB", tmp_path / "t.db")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    at = AppTest.from_file("../app.py", default_timeout=30).run()
+    name = at.sidebar.selectbox[0].value
+    assert at.button(key=f"del_{name}").disabled               # needs the topic name typed
+    at.text_input(key=f"del_confirm_{name}").input("wrong").run()
+    assert at.button(key=f"del_{name}").disabled
+    at.text_input(key=f"del_confirm_{name}").input(name).run()
+    assert not at.button(key=f"del_{name}").disabled
+    at.button(key=f"del_{name}").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert name not in load_topics(tmp_path / "topics.yaml")
+    assert name not in at.sidebar.selectbox[0].options
 
 
 def test_app_recommends_next_terms(tmp_path, monkeypatch):

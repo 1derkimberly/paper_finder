@@ -7,13 +7,14 @@ import pytest
 
 from paper_finder import db
 from paper_finder.config import CONFIG_DIR, Topic, load_topics, save_topic
+from conftest import FIXTURE_TOPICS
 from paper_finder.dashboard_data import citation_coverage, sort_frame
 from paper_finder.dashboard_data import Filters, apply_filters, display_title, load_frame, metrics, per_year, term_frequency
 from paper_finder.export import to_bibtex, to_csv
 from paper_finder.process import process
 from paper_finder.pubmed import Paper
 
-TOPIC = load_topics(CONFIG_DIR / "topics.yaml")["transient_bioelectronics"]
+TOPIC = load_topics(FIXTURE_TOPICS)["transient_bioelectronics"]
 GROUPS = {"tier1_general": ["Nature", "Sci Adv"], "materials_devices": ["Adv Mater"]}
 
 PAPERS = [
@@ -149,7 +150,7 @@ def test_app_smoke(db_path, monkeypatch):
     monkeypatch.setattr(cfg, "DEFAULT_DB", db_path)
     at = AppTest.from_file("../app.py", default_timeout=30).run()
     assert not at.exception, [e.value for e in at.exception]
-    assert at.title[0].value == "transient_bioelectronics"
+    assert at.title[0].value == "Transient Bioelectronics"
     labels = {m.label: m.value for m in at.metric}
     assert labels["총 논문 수"] == "3"
     # switch to card view and back without errors

@@ -16,7 +16,7 @@ from paper_finder.report import new_papers, write_report
 from paper_finder.update import update_topic
 from paper_finder.config import (CONFIG_DIR, DEFAULT_DB, load_journals, load_openalex_sources, load_settings,
                                  load_topics)
-from paper_finder.llm import ClaudeClient, LLMError, suggest_terms
+from paper_finder.llm import DEFAULT_JUDGE_MODEL, ClaudeClient, LLMError, suggest_terms
 from paper_finder.openalex import OpenAlexClient, OpenAlexError
 from paper_finder.pipeline import JudgeStats, enrich_db, judge_topic, run
 from paper_finder.dashboard_data import display_title
@@ -87,10 +87,13 @@ def _openalex_client() -> OpenAlexClient:
     return OpenAlexClient(api_key=s.openalex_api_key, mailto=s.openalex_mailto)
 
 
-def _claude_client() -> ClaudeClient | None:
+def _claude_client(judge: bool = False) -> ClaudeClient | None:
+    """judge=True: relevance verdicts (CLAUDE_JUDGE_MODEL, Haiku by default); else term suggestions."""
     s = load_settings()
     if not s.anthropic_api_key:
         return None
+    if judge:
+        return ClaudeClient(api_key=s.anthropic_api_key, model=s.claude_judge_model or DEFAULT_JUDGE_MODEL)
     return ClaudeClient(api_key=s.anthropic_api_key, model=s.claude_model)
 
 
@@ -154,7 +157,7 @@ def _cmd_search(args) -> int:
     for p, reason in res.excluded:
         print(f"  - excluded ({reason}): {p.title[:90]}  [{p.journal}]")
     if not args.no_llm and res.kept:
-        llm = _claude_client()
+        llm = _claude_client(judge=True)
         if llm is None:
             print("Claude check skipped (no ANTHROPIC_API_KEY)")
         else:
@@ -175,7 +178,7 @@ def _cmd_judge(args) -> int:
     if args.topic not in topics:
         print(f"unknown topic '{args.topic}'. available: {', '.join(topics)}", file=sys.stderr)
         return 2
-    llm = _claude_client()
+    llm = _claude_client(judge=True)
     if llm is None:
         print("ANTHROPIC_API_KEY is not set (.env)", file=sys.stderr)
         return 1
@@ -220,7 +223,7 @@ def _cmd_update(args) -> int:
     groups = load_journals(args.journals)
     settings = load_settings()
     pubmed = PubMedClient(api_key=settings.ncbi_api_key, email=settings.ncbi_email)
-    llm = None if args.no_llm else _claude_client()
+    llm = None if args.no_llm else _claude_client(judge=True)
     print(f"{datetime.now():%Y-%m-%d %H:%M}  update {', '.join(names)}"
           + ("" if llm else "  (Claude check off)"))
 

@@ -10,14 +10,15 @@
   - `npj Flex Electron`(PubMed 전체 29건), `Nat Electron`(47건)은 PubMed 수록이 부분적 → Phase 3에서 OpenAlex 보완 필요
 - Phase 2 (대시보드): 구현됨 — `app.py` (Streamlit). 주제 생성·키워드 편집·업데이트 실행·필터·차트·표/카드·읽음 표시·CSV/BibTeX
   - 키워드 확인 UI는 SPEC의 사이드바 대신 본문 상단 펼침 패널에 둠 (사이드바가 좁아서)
-  - UI에서 새 주제를 만들면 키워드는 exact_phrases로 들어감. facet 자동 제안은 Phase 4(Claude API)
+  - 새 주제는 본문 '새 주제' 화면에서 만든다: 주제 설명(한국어 가능) → Claude 용어 제안(facet·정확한 문구·제외 문구·주제 이름) → 칩으로 고르기 → 생성. 이것이 핵심 기능이라 키워드 직접 입력 화면은 두지 않는다 (만든 뒤 '검색 키워드' 패널에서 수정). 키가 없으면 새 주제를 만들 수 없다는 안내만 보임
 - Phase 3 (보강): 구현됨 — OpenAlex로 인용 수·무료 전문 링크(DOI 매칭), PubMed 수록이 부분적인 저널 보완 검색
   - 검증(2026-11-18): DOI 매칭 174/174 (100%, 목표 90%). 보완 검색으로 npj Flex Electron·Nat Electron 논문 11건 추가
   - OpenAlex는 키 없이 쓰면 IP당 하루 $0.10 공유 한도 + 검색 부하 시 429(30초 대기). 보완 검색이 실패해도 PubMed 결과는 저장되고 경고만 표시
 - Phase 4 (LLM): 구현됨 — Claude API로 용어 제안(`expand`·대시보드 키워드 패널), 관련성 판정(오탐) + 한국어 한 줄 요약(`judge`, 업데이트 후 자동)
-  - `ANTHROPIC_API_KEY` 가 없으면 LLM 기능만 꺼지고 나머지는 동작. 모델은 `CLAUDE_MODEL` (기본 claude-opus-5-5)
+  - `ANTHROPIC_API_KEY` 가 없으면 LLM 기능만 꺼지고 나머지는 동작
+  - 비용 분리: 용어 제안 = `CLAUDE_MODEL` (기본 claude-sonnet-5-5), 판정·요약 = `CLAUDE_JUDGE_MODEL` (기본 claude-haiku-5-5). Haiku는 서버 측 fallback이 없어 `fallbacks` 를 안 붙인다
   - 검증(2026-11-18, claude-sonnet-5-5): 174편 판정, 17편 관련 없음(토양·가스·전자코·열전 등). SPEC §10 기준 4편 모두 관련 있음
-  - 판정 기준은 "분야 전반"이다: 생분해가 아니어도 이식형·무선·연성 바이오전자는 관련 있음, 단어가 다른 뜻으로 우연히 걸린 것만 제외 (모든 facet을 요구하면 §10의 Science in-body networking 논문이 빠졌음)
+  - 판정 기준은 "모든 facet 개념이 실제로 해당될 것"(엄격). 2026-11-18 "분야 전반"으로 넓혔다가 사용자 요청으로 되돌림. 이 기준에서는 §10의 Science in-body networking 논문(생분해 아님)이 관련 없음으로 숨겨짐 (174편 중 49편 숨김, sonnet-5-5 기준)
   - 대시보드에는 별도 판정 버튼이 없다. '업데이트 실행' 안에서 자동으로 돈다
   - 키워드 편집기: 드롭다운 자동완성(수집 논문의 자주 나온 단어·2단어 구), facet 아래 '다음 추천' 칩. facet을 고치면 Claude가 다음 용어를 예상(용어 조합별 세션 캐시), 안 고쳤거나 키가 없으면 `suggest.py`의 문맥 유사도(오프라인, 품질 낮음)
 - Phase 5 (운영): 구현됨 — `update` (전체 주제 업데이트 → Claude 판정 → 신규 논문 리포트 → `runs` 기록), Windows 알림, 작업 스케줄러 주간 등록
@@ -94,6 +95,11 @@ tests/                 pytest (network 마커는 실제 API 호출)
 - 판정은 `llm_verdict IS NULL` 인 링크만 한다 (재검색해도 `link()` 가 판정을 보존). 키워드가 바뀌면 링크가 지워지므로 다시 판정된다.
 - Claude 판정은 업데이트당 최대 `MAX_JUDGE_PER_UPDATE`(300)건, 나머지는 다음 업데이트에서. 결과 1000건 초과면 '키워드가 너무 넓다' 경고 (대시보드 새 주제에서 단어 하나를 정확한 문구로 넣으면 수천 건이 걸림)
 - `.env` 는 `load_settings()` 호출마다 다시 읽고 `os.environ` 에 복사하지 않는다 (대시보드를 켠 채 키를 넣어도 반영). 실제 환경 변수가 있으면(빈 값 포함) 그쪽이 우선
+- 디자인: `.streamlit/config.toml` 테마(파란 강조색 #2a78d6 = 차트 색, Pretendard, light/dark 따로). 본문 = 헤더 → 필터 상자 → 지표 카드 4개 → [논문 | 동향] 탭, 논문은 카드 보기·최신순이 기본. '읽음' 카드는 흐리게(컨테이너 key `readcard_*` + CSS, 마우스를 올리면 선명). `use_container_width` 대신 `width="stretch"`
+- `st.cache_data` 캐시 키(`data_version()`)에 DB 파일 수정 시각을 넣는다. 그래야 CLI·주간 자동 업데이트로 바뀐 DB가 켜져 있는 대시보드에 바로 보인다
+- 미리보기용 별도 데이터: `PAPER_FINDER_CONFIG`·`PAPER_FINDER_DB`·`PAPER_FINDER_REPORTS` 환경 변수로 다른 폴더를 가리킬 수 있다 (`.claude/launch.json` 의 dashboard-demo, 포트 8502)
+- 테스트는 `tests/fixtures/topics.yaml` 을 쓴다 (conftest가 매 테스트 임시 config 폴더로 `CONFIG_DIR` 교체). 사용자의 `config/topics.yaml` 은 대시보드에서 바뀌므로 테스트가 기대면 안 된다
+- 주제 삭제(사이드바 '주제 삭제', 주제 이름을 입력해야 버튼이 켜짐): `topics.yaml` 항목·`topics`·`topic_papers`·`runs` 삭제. 어느 주제에도 안 속하게 된 논문은 지우되 `user_marks` 가 있는 논문은 남긴다. 리포트 파일은 둔다
 - Claude 용어 제안은 바로 저장하지 않고 키워드 편집기에 넣기만 한다 (사용자가 '키워드 저장'으로 확정).
 - Claude 호출은 `client.beta.messages.create` + `output_config.format` (JSON 스키마) + 서버 측 fallback(`fallbacks="default"`). 오류는 `LLMError` 로 바꾸고, 판정 중 오류가 나면 거기서 멈추되 저장된 배치는 유지.
 

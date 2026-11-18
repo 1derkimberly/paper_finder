@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -10,8 +11,13 @@ import anthropic
 
 from paper_finder.config import Topic
 
-DEFAULT_MODEL = "claude-opus-5-5"
+# Cost split: term suggestions are rare and need judgement -> Sonnet; relevance verdicts + summaries are
+# high-volume classification -> Haiku (1/20 of Sonnet's per-token price). Override with CLAUDE_MODEL /
+# CLAUDE_JUDGE_MODEL in .env.
+DEFAULT_MODEL = "claude-sonnet-5-5"
+DEFAULT_JUDGE_MODEL = "claude-haiku-5-5"
 # On a safety-classifier refusal the API retries the request on a fallback model in the same call.
+# Haiku models have no server-side fallback, so the parameter is left off for them.
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
@@ -32,6 +38,7 @@ class Suggestion:
     exact_phrases: list[str] = field(default_factory=list)
     exclude_phrases: list[str] = field(default_factory=list)
     notes: str = ""
+    name: str = ""          # suggested snake_case topic name (for a new topic)
 
 
 class ClaudeClient:
@@ -42,6 +49,9 @@ class ClaudeClient:
         self._client = client if client is not None else anthropic.Anthropic(api_key=api_key)
 
     def json(self, system: str, user: str, schema: dict, effort: str = "low", max_tokens: int = 16000) -> dict:
+        kwargs: dict[str, Any] = {}
+        if not self.model.startswith("claude-haiku"):
+            kwargs = {"betas": [FALLBACK_BETA], "fallbacks": "default"}
         try:
             resp = self._client.beta.messages.create(
                 model=self.model,
@@ -49,8 +59,7 @@ class ClaudeClient:
                 system=system,
                 messages=[{"role": "user", "content": user}],
                 output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
-                betas=[FALLBACK_BETA],
-                fallbacks="default",
+                **kwargs,
             )
         except anthropic.AuthenticationError as e:
             raise LLMError("ANTHROPIC_API_KEY가 올바르지 않습니다") from e
@@ -97,7 +106,8 @@ Propose search terms:
   in spectroscopy when searching "transient electronics"). Only list ones you are confident about.
 - Do not repeat terms that the current topic already has. When extending a current definition, put each term
   under the existing facet name for its concept; add a new facet only for a concept not covered yet.
-All terms in English. Write `notes` in Korean: one or two sentences on the choices a researcher should check."""
+All terms in English. Write `notes` in Korean: one or two sentences on the choices a researcher should check.
+topic_name: a short lowercase snake_case English name for the topic (2-4 words, e.g. transient_bioelectronics)."""
 
 _SUGGEST_SCHEMA = {
     "type": "object",
@@ -114,8 +124,9 @@ _SUGGEST_SCHEMA = {
         "exact_phrases": {"type": "array", "items": {"type": "string"}},
         "exclude_phrases": {"type": "array", "items": {"type": "string"}},
         "notes": {"type": "string"},
+        "topic_name": {"type": "string"},
     },
-    "required": ["facets", "exact_phrases", "exclude_phrases", "notes"],
+    "required": ["facets", "exact_phrases", "exclude_phrases", "notes", "topic_name"],
     "additionalProperties": False,
 }
 
@@ -167,6 +178,7 @@ def suggest_terms(llm: ClaudeClient, description: str, current: Topic | None = N
         exact_phrases=_clean(data["exact_phrases"], known),
         exclude_phrases=_clean(data["exclude_phrases"], known),
         notes=data["notes"].strip(),
+        name=re.sub(r"[^a-z0-9_]+", "_", data.get("topic_name", "").strip().lower()).strip("_"),
     )
 
 
@@ -205,15 +217,11 @@ You screen papers retrieved by a keyword search for a biomedical engineering lab
 
 {topic}
 
-The concept groups describe the core of the topic, but the lab follows the surrounding field too. For each
-paper decide whether a researcher in this area would want to see it:
-- relevant = true when the paper's own work (device, material, method, or a review of them) belongs to the
-  field the concept groups point to, even if it does not hit every concept. For a bioelectronics topic this
-  includes implantable, wireless, or soft bioelectronic devices and their materials, power, and communication,
-  whether or not the device itself is biodegradable.
-- relevant = false when the keywords matched by coincidence with a different meaning and the work lies outside
-  that field (e.g. "transient" in spectroscopy, laser physics, or a gas-sensor signal; "dissolvable" in
-  pharmaceutics with no electronics; electronics for soil, food, or odor analysis), or when the field is only
+For each paper decide whether it is really about this topic:
+- relevant = true when the paper's own work (device, material, method, or a review of them) is about the topic
+  defined by the concept groups above, with each concept present in substance.
+- relevant = false when the keywords matched by coincidence with a different meaning (e.g. "transient" in
+  spectroscopy or laser physics, "dissolvable" in pharmaceutics with no electronics), or when the topic is only
   mentioned in passing.
 - If only the title is available, judge from the title and lean toward relevant when unsure.
 

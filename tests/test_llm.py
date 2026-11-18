@@ -8,7 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from paper_finder import db
-from paper_finder.config import CONFIG_DIR, load_topics
+from paper_finder.config import load_topics
+from conftest import FIXTURE_TOPICS
 from paper_finder.dashboard_data import Filters, apply_filters, load_frame
 from paper_finder.export import to_csv
 from paper_finder.llm import ClaudeClient, LLMError, PaperText, judge_papers, suggest_terms
@@ -16,7 +17,7 @@ from paper_finder.pipeline import judge_topic
 from paper_finder.process import process
 from paper_finder.pubmed import Paper
 
-TOPIC = load_topics(CONFIG_DIR / "topics.yaml")["transient_bioelectronics"]
+TOPIC = load_topics(FIXTURE_TOPICS)["transient_bioelectronics"]
 GROUPS = {"tier1_general": ["Nature", "Sci Adv"]}
 
 
@@ -60,9 +61,13 @@ def test_request_shape_and_judge():
     assert v["1"].relevant and not v["2"].relevant
     assert v["1"].summary == "요약 1"
     call = fake.calls[0]
-    assert call["model"] == "claude-opus-5-5"
+    assert call["model"] == "claude-sonnet-5-5"
     assert call["output_config"]["format"]["type"] == "json_schema"
     assert call["fallbacks"] == "default" and call["betas"] == ["server-side-fallback-2026-07-01"]
+    # Haiku has no server-side fallback: the parameter is left off
+    haiku = FakeAnthropic(judge_reply())
+    judge_papers(ClaudeClient(model="claude-haiku-5-5", client=haiku), TOPIC, papers)
+    assert "fallbacks" not in haiku.calls[0] and "betas" not in haiku.calls[0]
     assert "Facet 'material'" in call["system"]
     assert "(no abstract available)" in call["messages"][0]["content"]
 
@@ -196,7 +201,7 @@ def test_app_suggestion_flow(db_path, monkeypatch):
     assert "PLGA" in {ms.key: ms.value for ms in at.multiselect}["facet_transient_bioelectronics_material"]
     assert ("material", tuple(TOPIC.facets["material"] + ["silk fibroin"])) in next_calls
     assert len(next_calls) == n_calls + 1          # new term set -> one more call
-    assert load_topics(CONFIG_DIR / "topics.yaml")["transient_bioelectronics"].to_dict() == TOPIC.to_dict()
+    assert load_topics(cfg.CONFIG_DIR / "topics.yaml")["transient_bioelectronics"].to_dict() == TOPIC.to_dict()
 
 
 def test_judge_topic_stops_on_error_and_keeps_saved(db_path):

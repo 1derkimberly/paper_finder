@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import os
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -12,7 +13,7 @@ import pandas as pd
 from paper_finder.config import ROOT
 from paper_finder.dashboard_data import display_title, load_frame, rejected_mask
 
-REPORTS_DIR = ROOT / "reports"
+REPORTS_DIR = Path(os.environ.get("PAPER_FINDER_REPORTS") or ROOT / "reports")
 
 
 @dataclass

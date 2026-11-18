@@ -6,13 +6,14 @@ import pytest
 
 from paper_finder import db
 from paper_finder.config import CONFIG_DIR, OpenAlexSource, load_openalex_sources, load_topics
+from conftest import FIXTURE_TOPICS
 from paper_finder.openalex import OpenAlexClient, OpenAlexError, _abstract, work_to_paper
 from paper_finder.pipeline import enrich_db, run
 from paper_finder.process import matches_topic
 from paper_finder.pubmed import Paper
 from paper_finder.query import openalex_query
 
-TOPIC = load_topics(CONFIG_DIR / "topics.yaml")["transient_bioelectronics"]
+TOPIC = load_topics(FIXTURE_TOPICS)["transient_bioelectronics"]
 SRC = OpenAlexSource("Nat Electron", "tier1_bme", "2520-1131", "S1")
 
 

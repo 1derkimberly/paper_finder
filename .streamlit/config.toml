@@ -1,0 +1,42 @@
+[server]
+runOnSave = false
+
+[theme]
+# One accent (blue) that matches the chart bars; Korean-friendly font.
+font = "Pretendard, 'Noto Sans KR', 'Malgun Gothic', sans-serif"
+headingFont = "Pretendard, 'Noto Sans KR', 'Malgun Gothic', sans-serif"
+fontFaces = [
+  { family = "Pretendard", url = "https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/woff2/Pretendard-Regular.woff2", weight = 400 },
+  { family = "Pretendard", url = "https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/woff2/Pretendard-SemiBold.woff2", weight = 600 },
+  { family = "Pretendard", url = "https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/woff2/Pretendard-Bold.woff2", weight = 700 },
+]
+baseFontSize = 15
+headingFontWeights = [700, 650, 600]
+headingFontSizes = ["2rem", "1.4rem", "1.15rem"]
+baseRadius = "0.6rem"
+buttonRadius = "0.5rem"
+showWidgetBorder = true
+
+[theme.light]
+primaryColor = "#2a78d6"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f4f6f9"
+textColor = "#1f2328"
+linkColor = "#1f66c1"
+borderColor = "#dde2e8"
+
+[theme.light.sidebar]
+backgroundColor = "#f6f8fb"
+borderColor = "#e3e7ec"
+
+[theme.dark]
+primaryColor = "#3987e5"
+backgroundColor = "#0f1115"
+secondaryBackgroundColor = "#1a1e25"
+textColor = "#e6e8eb"
+linkColor = "#6aa9f0"
+borderColor = "#2c323a"
+
+[theme.dark.sidebar]
+backgroundColor = "#14171c"
+borderColor = "#262b33"

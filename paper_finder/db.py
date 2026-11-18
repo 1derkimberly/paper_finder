@@ -223,6 +223,17 @@ def last_run(conn: sqlite3.Connection, topic: str, successful: bool = True) -> s
     ).fetchone()
 
 
+def delete_topic(conn: sqlite3.Connection, topic_name: str) -> int:
+    """Delete a topic, its paper links and run log. Papers no other topic links to are deleted too, unless the
+    user marked them (status / note). Returns the number of deleted papers."""
+    conn.execute("DELETE FROM runs WHERE topic = ?", (topic_name,))
+    conn.execute("DELETE FROM topics WHERE name = ?", (topic_name,))  # topic_papers cascade
+    cur = conn.execute(
+        "DELETE FROM papers WHERE id NOT IN (SELECT paper_id FROM topic_papers) "
+        "AND id NOT IN (SELECT paper_id FROM user_marks)")
+    return cur.rowcount
+
+
 MARK_STATUSES = ("to-read", "read", "starred")
 
 

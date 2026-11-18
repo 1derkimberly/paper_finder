@@ -11,8 +11,9 @@ import yaml
 from dotenv import dotenv_values
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG_DIR = ROOT / "config"
-DEFAULT_DB = ROOT / "data" / "papers.db"
+# PAPER_FINDER_CONFIG / PAPER_FINDER_DB point a separate copy (e.g. a demo or test dataset) elsewhere.
+CONFIG_DIR = Path(os.environ.get("PAPER_FINDER_CONFIG") or ROOT / "config")
+DEFAULT_DB = Path(os.environ.get("PAPER_FINDER_DB") or ROOT / "data" / "papers.db")
 
 
 @dataclass
@@ -37,7 +38,8 @@ class Settings:
     openalex_mailto: str | None
     openalex_api_key: str | None
     anthropic_api_key: str | None
-    claude_model: str | None = None
+    claude_model: str | None = None         # term suggestions (default llm.DEFAULT_MODEL)
+    claude_judge_model: str | None = None   # relevance verdicts + summaries (default llm.DEFAULT_JUDGE_MODEL)
 
 
 @dataclass
@@ -91,6 +93,17 @@ def save_topic(topic: Topic, path: Path = CONFIG_DIR / "topics.yaml") -> None:
     path.write_text(TOPICS_HEADER + body, encoding="utf-8")
 
 
+def remove_topic(name: str, path: Path = CONFIG_DIR / "topics.yaml") -> bool:
+    """Remove one topic from topics.yaml. Returns False if it was not there."""
+    raw = _read_yaml(path) if path.exists() else {}
+    if name not in raw:
+        return False
+    del raw[name]
+    body = yaml.safe_dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=None, width=120) if raw else ""
+    path.write_text(TOPICS_HEADER + body, encoding="utf-8")
+    return True
+
+
 def load_journals(path: Path = CONFIG_DIR / "journals.yaml") -> dict[str, list[str]]:
     raw = _read_yaml(path)
     return {group: [str(j) for j in journals] for group, journals in raw.items() if journals}
@@ -125,4 +138,5 @@ def load_settings() -> Settings:
         openalex_api_key=get("OPENALEX_API_KEY"),
         anthropic_api_key=get("ANTHROPIC_API_KEY"),
         claude_model=get("CLAUDE_MODEL"),
+        claude_judge_model=get("CLAUDE_JUDGE_MODEL"),
     )

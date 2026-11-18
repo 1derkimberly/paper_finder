@@ -4,11 +4,12 @@ from datetime import date
 
 from paper_finder import db
 from paper_finder.config import CONFIG_DIR, load_journals, load_topics
+from conftest import FIXTURE_TOPICS
 from paper_finder.process import dedupe, process
 from paper_finder.pubmed import Paper, is_review, parse_pubmed_xml
 from paper_finder.query import build_query, years_ago
 
-TOPIC = load_topics(CONFIG_DIR / "topics.yaml")["transient_bioelectronics"]
+TOPIC = load_topics(FIXTURE_TOPICS)["transient_bioelectronics"]
 
 SAMPLE_XML = b"""<?xml version="1.0"?>
 <PubmedArticleSet>

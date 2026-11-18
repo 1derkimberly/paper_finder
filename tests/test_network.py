@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 
 from paper_finder.config import CONFIG_DIR, load_journals, load_settings, load_topics
+from conftest import FIXTURE_TOPICS
 from paper_finder.pipeline import run
 from paper_finder.pubmed import PubMedClient
 
@@ -21,7 +22,7 @@ MUST_NOT_KEEP = "10.1126/sciadv.adv4436"  # laser drilling via transient electro
 
 @pytest.fixture(scope="module")
 def tier1_result():
-    topic = load_topics(CONFIG_DIR / "topics.yaml")["transient_bioelectronics"]
+    topic = load_topics(FIXTURE_TOPICS)["transient_bioelectronics"]
     journals = load_journals(CONFIG_DIR / "journals.yaml")
     groups = {g: journals[g] for g in ("tier1_general", "tier1_bme")}
     s = load_settings()

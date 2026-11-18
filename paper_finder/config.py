@@ -142,7 +142,11 @@ def load_settings() -> Settings:
 
     def get(key: str) -> str | None:
         value = os.environ[key] if key in os.environ else file_values.get(key)
-        return (value or "").strip() or None
+        # tolerate copy-paste slips: surrounding spaces / quotes, a pasted "NAME=" prefix
+        v = (value or "").strip().strip("'\"").strip()
+        if v.startswith(f"{key}="):
+            v = v[len(key) + 1:].strip().strip("'\"").strip()
+        return v or None
 
     return Settings(
         ncbi_api_key=get("NCBI_API_KEY"),

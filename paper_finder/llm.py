@@ -84,7 +84,10 @@ class ClaudeClient:
                 **kwargs,
             )
         except anthropic.AuthenticationError as e:
-            raise LLMError("ANTHROPIC_API_KEY가 올바르지 않습니다") from e
+            key = getattr(self._client, "api_key", "") or ""
+            hint = ("값이 sk-ant- 로 시작하지 않습니다" if not key.startswith("sk-ant-")
+                    else f"키 끝자리 …{key[-4:]} — 콘솔에서 이 키가 폐기되지 않았는지 확인하세요")
+            raise LLMError(f"ANTHROPIC_API_KEY가 올바르지 않습니다 ({hint})") from e
         except anthropic.PermissionDeniedError as e:
             raise LLMError(f"이 API 키로는 {self.model} 모델을 쓸 수 없습니다") from e
         except anthropic.NotFoundError as e:

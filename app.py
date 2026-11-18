@@ -11,8 +11,8 @@ import streamlit as st
 from paper_finder import db
 from paper_finder.config import (CONFIG_DIR, DEFAULT_DB, Topic, load_journals, load_settings,
                                  load_topics, save_topic)
-from paper_finder.dashboard_data import (Filters, apply_filters, load_frame, metrics, per_journal,
-                                         per_year, term_frequency)
+from paper_finder.dashboard_data import (Filters, apply_filters, display_title, load_frame, metrics,
+                                         per_journal, per_year, term_frequency)
 from paper_finder.export import to_bibtex, to_csv
 from paper_finder.pipeline import run
 from paper_finder.pubmed import PubMedClient
@@ -252,7 +252,8 @@ if view == "카드":
     for _, r in df.iloc[(page - 1) * PAGE_SIZE: page * PAGE_SIZE].iterrows():
         badge = "NEW · " if r["is_new"] else ""
         star = "★ " if r["status"] == "starred" else ""
-        with st.expander(f"{badge}{star}{r['title']}  ·  {r['journal']}, {r['pub_date'][:7]}"):
+        title = display_title(r["title"], r["is_review"])
+        with st.expander(f"{badge}{star}{title}  ·  {r['journal']}, {r['pub_date'][:7]}"):
             authors = r["authors"]
             st.caption("; ".join(authors[:6]) +(f" 외 {len(authors) - 6}명" if len(authors) > 6 else ""))
             links = []
@@ -276,7 +277,7 @@ else:
     table = pd.DataFrame({
         "id": df["id"],
         "신규": df["is_new"].map(lambda x: "NEW" if x else ""),
-        "제목": df["title"],
+        "제목": [display_title(t, rv) for t, rv in zip(df["title"], df["is_review"])],
         "링크": df.apply(lambda r: f"https://doi.org/{r['doi']}" if r["doi"]
                        else f"https://pubmed.ncbi.nlm.nih.gov/{r['pmid']}/", axis=1),
         "저널": df["journal"],

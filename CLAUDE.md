@@ -59,6 +59,7 @@ tests/                 pytest (network 마커는 실제 API 호출)
 - `first_seen` 은 처음 저장될 때만 기록하고 upsert 때 덮어쓰지 않는다 ("신규" 표시용).
 - 주제의 키워드가 바뀌면 그 주제의 `topic_papers` 링크를 지우고 다시 수집한다 (옛 검색식 결과가 섞이지 않게). `user_marks` 는 논문 단위라 유지.
 - 저자는 `"성, 이름"` 형식으로 저장한다 (BibTeX 호환).
+- 리뷰 판별은 PubMed PublicationType 기준 (`Review`, `* Review`, `Meta-Analysis`) → 제목 앞 `(review)`. 새 컬럼은 `db._ADDED_COLUMNS` 에 추가하면 기존 DB에 자동 반영.
 - 대시보드에서 키워드를 저장하면 `topics.yaml` 이 다시 쓰여 머리말 외 주석은 사라진다.
 
 ## 작업 규칙

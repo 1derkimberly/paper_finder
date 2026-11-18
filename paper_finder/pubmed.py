@@ -26,6 +26,12 @@ class Paper:
     authors: list[str] = field(default_factory=list)
     doi: str | None = None
     mesh: list[str] = field(default_factory=list)
+    pub_types: list[str] = field(default_factory=list)  # PubMed PublicationType, e.g. "Review"
+
+
+def is_review(pub_types: list[str]) -> bool:
+    """Review-type articles: Review, Systematic Review, Scoping Review, Meta-Analysis."""
+    return any(t == "Review" or t.endswith(" Review") or t == "Meta-Analysis" for t in pub_types)
 
 
 class PubMedClient:
@@ -163,6 +169,7 @@ def _parse_article(node: ET.Element) -> Paper | None:
         authors=authors,
         doi=doi.lower() if doi else None,
         mesh=[m for m in mesh if m],
+        pub_types=[t for t in (_text(e) for e in art.findall("PublicationTypeList/PublicationType")) if t],
     )
 
 

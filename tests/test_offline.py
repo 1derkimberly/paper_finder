@@ -5,7 +5,7 @@ from datetime import date
 from paper_finder import db
 from paper_finder.config import CONFIG_DIR, load_journals, load_topics
 from paper_finder.process import dedupe, process
-from paper_finder.pubmed import Paper, parse_pubmed_xml
+from paper_finder.pubmed import Paper, is_review, parse_pubmed_xml
 from paper_finder.query import build_query, years_ago
 
 TOPIC = load_topics(CONFIG_DIR / "topics.yaml")["transient_bioelectronics"]
@@ -25,6 +25,8 @@ SAMPLE_XML = b"""<?xml version="1.0"?>
     <AuthorList><Author><LastName>Kim</LastName><ForeName>A</ForeName></Author>
      <Author><CollectiveName>Consortium X</CollectiveName></Author></AuthorList>
     <ArticleDate><Year>2026</Year><Month>01</Month><Day>07</Day></ArticleDate>
+    <PublicationTypeList><PublicationType UI="D016428">Journal Article</PublicationType>
+     <PublicationType UI="D016454">Review</PublicationType></PublicationTypeList>
    </Article>
    <MedlineJournalInfo><MedlineTA>Nature</MedlineTA></MedlineJournalInfo>
    <MeshHeadingList><MeshHeading><DescriptorName>Absorbable Implants</DescriptorName></MeshHeading></MeshHeadingList>
@@ -81,8 +83,33 @@ def test_parse_pubmed_xml():
     assert p1.authors == ["Kim, A", "Consortium X"]
     assert p1.abstract.startswith("BACKGROUND: Wireless")
     assert p1.mesh == ["Absorbable Implants"]
+    assert p1.pub_types == ["Journal Article", "Review"]
     assert p2.pub_date == "2025-11"
     assert p2.doi == "10.1/abc"
+    assert p2.pub_types == []
+
+
+def test_is_review():
+    assert is_review(["Journal Article", "Review"])
+    assert is_review(["Systematic Review"])
+    assert is_review(["Meta-Analysis"])
+    assert not is_review(["Journal Article", "Research Support, Non-U.S. Gov't"])
+    assert not is_review([])
+
+
+def test_migration_adds_pub_types(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE papers (id INTEGER PRIMARY KEY, pmid TEXT UNIQUE, doi TEXT UNIQUE, "
+                "title TEXT NOT NULL, abstract TEXT, journal TEXT, pub_date TEXT, authors TEXT, mesh TEXT, "
+                "cited_by INTEGER, oa_url TEXT, first_seen TEXT NOT NULL, updated_at TEXT NOT NULL)")
+    old.commit()
+    old.close()
+    conn = db.connect(path)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(papers)")}
+    assert "pub_types" in cols
+    conn.close()
 
 
 def test_dedupe_doi_pmid_title():

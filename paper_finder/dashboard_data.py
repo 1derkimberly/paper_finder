@@ -11,12 +11,13 @@ from pathlib import Path
 import pandas as pd
 
 from paper_finder import db
+from paper_finder.pubmed import is_review
 
 NEW_DAYS = 7
 TOP_GROUP_PREFIX = "tier1"  # journal groups counted as "상위 저널"
 
 COLUMNS = ["id", "pmid", "doi", "title", "abstract", "journal", "group", "pub_date", "pub_dt", "year",
-           "authors", "mesh", "cited_by", "oa_url", "first_seen", "is_new", "relevance",
+           "authors", "mesh", "pub_types", "is_review", "cited_by", "oa_url", "first_seen", "is_new", "relevance",
            "matched_terms", "status", "note"]
 
 
@@ -49,6 +50,7 @@ def load_frame(db_path: Path, topic_name: str, journal_groups: dict[str, list[st
     records = []
     for r in rows:
         pub_dt = _pub_dt(r["pub_date"])
+        pub_types = json.loads(r["pub_types"] or "[]")
         records.append({
             "id": r["id"], "pmid": r["pmid"], "doi": r["doi"], "title": r["title"],
             "abstract": r["abstract"] or "", "journal": r["journal"] or "",
@@ -56,6 +58,7 @@ def load_frame(db_path: Path, topic_name: str, journal_groups: dict[str, list[st
             "pub_date": r["pub_date"] or "", "pub_dt": pub_dt,
             "year": pub_dt.year if pd.notna(pub_dt) else None,
             "authors": json.loads(r["authors"] or "[]"), "mesh": json.loads(r["mesh"] or "[]"),
+            "pub_types": pub_types, "is_review": is_review(pub_types),
             "cited_by": r["cited_by"], "oa_url": r["oa_url"], "first_seen": r["first_seen"],
             "is_new": r["first_seen"] >= cutoff, "relevance": r["relevance"] or 0.0,
             "matched_terms": json.loads(r["matched_terms"] or "{}"),
@@ -64,6 +67,13 @@ def load_frame(db_path: Path, topic_name: str, journal_groups: dict[str, list[st
     df = pd.DataFrame.from_records(records, columns=COLUMNS)
     df["year"] = df["year"].astype("Int64")
     return df
+
+
+REVIEW_PREFIX = "(review) "
+
+
+def display_title(title: str, review: bool) -> str:
+    return REVIEW_PREFIX + title if review else title
 
 
 @dataclass

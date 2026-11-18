@@ -17,6 +17,7 @@ CSV_COLUMNS = {
 def to_csv(df: pd.DataFrame) -> bytes:
     out = df[list(CSV_COLUMNS)].copy()
     out["authors"] = out["authors"].map(lambda a: "; ".join(a))
+    out.insert(1, "article_type", df["is_review"].map(lambda r: "review" if r else "article"))
     # utf-8-sig so Excel opens Korean/accents correctly
     return out.to_csv(index=False).encode("utf-8-sig")
 

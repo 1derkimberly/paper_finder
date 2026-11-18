@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import date
 from pathlib import Path
@@ -10,7 +11,8 @@ from pathlib import Path
 from paper_finder import db
 from paper_finder.config import CONFIG_DIR, DEFAULT_DB, load_journals, load_settings, load_topics
 from paper_finder.pipeline import run
-from paper_finder.pubmed import PubMedClient
+from paper_finder.dashboard_data import display_title
+from paper_finder.pubmed import PubMedClient, is_review
 from paper_finder.query import years_ago
 
 
@@ -81,7 +83,7 @@ def _cmd_search(args) -> int:
     print()
     for i, s in enumerate(res.kept, 1):
         p = s.paper
-        print(f"{i:3d}. [{s.relevance:.0f}] {p.title[:100]}")
+        print(f"{i:3d}. [{s.relevance:.0f}] {display_title(p.title, is_review(p.pub_types))[:100]}")
         print(f"      {p.journal}, {p.pub_date}  doi:{p.doi or '-'}  pmid:{p.pmid}")
     print(f"\nsaved to {args.db}")
     return 0
@@ -102,7 +104,8 @@ def _cmd_list(args) -> int:
     week_ago = date.fromordinal(date.today().toordinal() - 7).isoformat()
     for i, r in enumerate(rows[: args.limit], 1):
         badge = " NEW" if r["first_seen"] >= week_ago else ""
-        print(f"{i:3d}. [{r['relevance']:.0f}]{badge} {r['title'][:100]}")
+        review = is_review(json.loads(r["pub_types"] or "[]"))
+        print(f"{i:3d}. [{r['relevance']:.0f}]{badge} {display_title(r['title'], review)[:100]}")
         print(f"      {r['journal']}, {r['pub_date']}  doi:{r['doi'] or '-'}")
     print(f"\n{len(rows)} papers total")
     return 0

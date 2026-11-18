@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS papers (
     pub_date    TEXT,
     authors     TEXT,              -- JSON list
     mesh        TEXT,              -- JSON list
+    pub_types   TEXT,              -- JSON list (PubMed PublicationType)
     cited_by    INTEGER,           -- Phase 3 (OpenAlex)
     oa_url      TEXT,              -- Phase 3 (OpenAlex)
     first_seen  TEXT NOT NULL,
@@ -54,7 +55,20 @@ def connect(path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+# Columns added after the first release: (table, column, type)
+_ADDED_COLUMNS = [("papers", "pub_types", "TEXT")]
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, column, coltype in _ADDED_COLUMNS:
+        existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+    conn.commit()
 
 
 def upsert_topic(conn: sqlite3.Connection, topic: Topic) -> int:
@@ -85,17 +99,18 @@ def upsert_paper(conn: sqlite3.Connection, s: Scored, today: date | None = None)
         row = conn.execute("SELECT id FROM papers WHERE pmid = ?", (p.pmid,)).fetchone()
 
     values = (p.pmid, p.doi, p.title, p.abstract, p.journal, p.pub_date,
-              json.dumps(p.authors, ensure_ascii=False), json.dumps(p.mesh, ensure_ascii=False))
+              json.dumps(p.authors, ensure_ascii=False), json.dumps(p.mesh, ensure_ascii=False),
+              json.dumps(p.pub_types, ensure_ascii=False))
     if row is None:
         cur = conn.execute(
-            "INSERT INTO papers (pmid, doi, title, abstract, journal, pub_date, authors, mesh, "
-            "first_seen, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO papers (pmid, doi, title, abstract, journal, pub_date, authors, mesh, pub_types, "
+            "first_seen, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (*values, seen, now),
         )
         return cur.lastrowid, True
     conn.execute(
         "UPDATE papers SET pmid=?, doi=?, title=?, abstract=?, journal=?, pub_date=?, authors=?, "
-        "mesh=?, updated_at=? WHERE id=?",
+        "mesh=?, pub_types=?, updated_at=? WHERE id=?",
         (*values, now, row["id"]),
     )
     return row["id"], False

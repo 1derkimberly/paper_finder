@@ -7,7 +7,7 @@ import pytest
 
 from paper_finder import db
 from paper_finder.config import CONFIG_DIR, Topic, load_topics, save_topic
-from paper_finder.dashboard_data import Filters, apply_filters, load_frame, metrics, per_year, term_frequency
+from paper_finder.dashboard_data import Filters, apply_filters, display_title, load_frame, metrics, per_year, term_frequency
 from paper_finder.export import to_bibtex, to_csv
 from paper_finder.process import process
 from paper_finder.pubmed import Paper
@@ -20,7 +20,8 @@ PAPERS = [
           pub_date="2026-01-07", authors=["Kim, A", "Lee, B"], mesh=["Absorbable Implants"],
           abstract="transient electronics for nerve"),
     Paper(pmid="2", doi="10.1/b", title="Biodegradable piezoelectric sensor", journal="Adv Mater",
-          pub_date="2023-05", authors=["Kim, A"], abstract="implantable"),
+          pub_date="2023-05", authors=["Kim, A"], abstract="implantable",
+          pub_types=["Journal Article", "Review"]),
     Paper(pmid="3", doi=None, title="Transient electronic stimulator", journal="Some J",
           pub_date="2022", authors=[], abstract="implant"),
 ]
@@ -47,6 +48,8 @@ def test_load_frame_and_metrics(db_path):
     assert by_pmid.loc["1", "group"] == "tier1_general"
     assert by_pmid.loc["3", "group"] == "기타"
     assert by_pmid.loc["1", "is_new"] and not by_pmid.loc["2", "is_new"]
+    assert by_pmid.loc["2", "is_review"] and not by_pmid.loc["1", "is_review"]
+    assert display_title(by_pmid.loc["2", "title"], True) == "(review) Biodegradable piezoelectric sensor"
     m = metrics(df)
     assert m == {"total": 3, "new": 1, "top_ratio": pytest.approx(1 / 3)}
     assert per_year(df).set_index("연도")["논문 수"].to_dict() == {2022: 1, 2023: 1, 2026: 1}
@@ -99,7 +102,8 @@ def test_keyword_change_clears_links(db_path):
 def test_exports(db_path):
     df = load_frame(db_path, TOPIC.name, GROUPS)
     csv = to_csv(df).decode("utf-8-sig")
-    assert csv.splitlines()[0].startswith("title,authors,journal")
+    assert csv.splitlines()[0].startswith("title,article_type,authors,journal")
+    assert "Biodegradable piezoelectric sensor,review," in csv
     assert "Kim, A; Lee, B" in csv
     bib = to_bibtex(df)
     assert bib.count("@article{") == 3

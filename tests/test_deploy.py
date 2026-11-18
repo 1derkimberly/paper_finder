@@ -6,6 +6,7 @@ from datetime import date, datetime
 
 import pytest
 
+from app_helpers import ADMIN, NEW, go, menu
 from conftest import FIXTURE_TOPICS
 from paper_finder import db
 from paper_finder.config import load_topics
@@ -124,7 +125,7 @@ def _suggest(monkeypatch, name="zinc_battery"):
 
 
 def _create(at, desc="녹는 배터리"):
-    at.sidebar.selectbox[0].set_value("＋ 새 주제 만들기").run()
+    go(at, NEW)
     at.text_area(key="nt_desc").input(desc)          # form: typed text is sent with the button press
     next(b for b in at.button if b.label == "Claude 용어 제안 받기").click().run()
     next(b for b in at.button if b.label == "이 키워드로 주제 만들기").click().run()
@@ -144,7 +145,7 @@ def _give_topic(tmp_path, owner):
 
 def test_visitor_tastes_everything_with_limits(tmp_path, monkeypatch):
     at = _app(tmp_path, monkeypatch, "")
-    assert at.sidebar.selectbox[0].options == ["＋ 새 주제 만들기"]        # the admin's topic is not shown
+    assert menu(at) == ["＋ 새 주제 만들기"]        # the admin's topic is not shown
     assert "구글로 로그인" in [b.label for b in at.button]
 
     _suggest(monkeypatch)
@@ -160,7 +161,7 @@ def test_visitor_tastes_everything_with_limits(tmp_path, monkeypatch):
     assert "업데이트 실행" in [b.label for b in at.button]                     # own topic: manageable
     assert any("최근 1년" in c.value for c in at.caption)                         # 1-year search limit
     # quota: a second topic is refused
-    at.sidebar.selectbox[0].set_value("＋ 새 주제 만들기").run()
+    go(at, NEW)
     assert any("더 만들 수 없습니다" in w.value for w in at.warning)
 
 
@@ -190,13 +191,13 @@ def test_user_topic_limit_and_privacy(tmp_path, monkeypatch):
     _suggest(monkeypatch, "t1")
     for _ in range(3):
         _create(at.run())
-    at.sidebar.selectbox[0].set_value("＋ 새 주제 만들기").run()
+    go(at, NEW)
     assert any("더 만들 수 없습니다" in w.value for w in at.warning)
-    assert len(at.sidebar.selectbox[0].options) == 4                          # own 3 + 새 주제
+    assert len(menu(at)) == 4                          # own 3 + 새 주제
     other = _app(tmp_path, monkeypatch, "c@x.com", admins="boss@x.com")
-    assert other.sidebar.selectbox[0].options == ["＋ 새 주제 만들기"]      # neither a@x.com's nor the admin's
+    assert menu(other) == ["＋ 새 주제 만들기"]      # neither a@x.com's nor the admin's
     admin = _app(tmp_path, monkeypatch, "boss@x.com", admins="boss@x.com")
-    assert admin.sidebar.selectbox[0].options == ["transient_bioelectronics", "＋ 새 주제 만들기",
+    assert menu(admin) == ["transient_bioelectronics", "＋ 새 주제 만들기",
                                                   "⚙ 관리 (유지 보수)"]
 
 
@@ -208,10 +209,10 @@ def test_daily_budget_blocks_visitors_not_admin(tmp_path, monkeypatch):
         db.record_usage(conn, "anon:x", "visitor", "judge", "claude-haiku-5-5", 1, 1, 5.0)
     conn.close()
     at = _app(tmp_path, monkeypatch, "", key="test-key-not-used")
-    at.sidebar.selectbox[0].set_value("＋ 새 주제 만들기").run()
+    go(at, NEW)
     assert any("사용 한도" in w.value for w in at.warning)
     admin = _app(tmp_path, monkeypatch, "boss@x.com", admins="boss@x.com", key="test-key-not-used")
-    admin.sidebar.selectbox[0].set_value("＋ 새 주제 만들기").run()
+    go(admin, NEW)
     assert not any("사용 한도" in w.value for w in admin.warning)
 
 
@@ -220,7 +221,7 @@ def test_admin_maintenance_page(tmp_path, monkeypatch):
     assert "업데이트 실행" in [b.label for b in at.button]
     assert any("편집" in e.label for e in at.expander)
     assert not any(m.value == "None" for m in at.markdown)          # no stray magic output
-    at.sidebar.selectbox[0].set_value("⚙ 관리 (유지 보수)").run()
+    go(at, ADMIN)
     assert not at.exception, [e.value for e in at.exception]
     assert at.title[0].value == "관리"
     at.number_input[0].set_value(2.5)
@@ -228,10 +229,11 @@ def test_admin_maintenance_page(tmp_path, monkeypatch):
     assert not at.exception, [e.value for e in at.exception]
     from paper_finder.quota import load_limits
     assert load_limits(tmp_path / "t.db").daily_budget_usd == 2.5
-    # deleting a topic from the admin page needs its ID typed in
-    assert at.button(key="admin_delete").disabled
-    at.text_input(key="admin_delete_confirm").input("transient_bioelectronics").run()
-    assert not at.button(key="admin_delete").disabled
+    # deleting a topic from the admin page asks for confirmation first; 취소 keeps it
+    at.button(key="admin_delete").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    at.button(key="del_cancel").click().run()
+    assert "transient_bioelectronics" in menu(at)
     next(b for b in at.button if "정리" in b.label).click().run()
     assert not at.exception, [e.value for e in at.exception]
     assert any("지웠습니다" in s.value for s in at.success)
@@ -266,7 +268,7 @@ def test_empty_service_starts_with_new_topic(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-used")
     at = AppTest.from_file("../app.py", default_timeout=30).run()
     assert not at.exception, [e.value for e in at.exception]
-    assert at.sidebar.selectbox[0].options == ["＋ 새 주제 만들기"]
+    assert menu(at) == [NEW]
     assert at.title[0].value == "Paper Finder"
     assert "구글로 로그인" in [b.label for b in at.button]
 

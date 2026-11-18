@@ -49,6 +49,7 @@ _DB_URL = load_settings().database_url
 DB_PATH: db.DBTarget = _DB_URL if (_DB_URL and db.is_postgres(_DB_URL)) else DEFAULT_DB
 NEW_TOPIC = "＋ 새 주제 만들기"
 ADMIN_PAGE = "⚙ 관리 (유지 보수)"
+MY_PAGE = "내 페이지"
 STATUS_LABELS = {"": "읽지 않음","to-read": "읽을 예정", "read": "읽음", "starred": "★ 즐겨찾기"}
 LABEL_TO_STATUS = {v: k for k, v in STATUS_LABELS.items()}
 PAGE_SIZE = 20
@@ -329,7 +330,7 @@ if msg := st.session_state.pop("deleted_msg", None):
 
 
 def topic_label(name: str) -> str:
-    if name in (NEW_TOPIC, ADMIN_PAGE):
+    if name in (NEW_TOPIC, ADMIN_PAGE, MY_PAGE):
         return name
     info = VISIBLE[name]
     return info.title or name
@@ -338,13 +339,62 @@ def topic_label(name: str) -> str:
 def owned_count() -> int:
     return sum(1 for i in INFOS.values() if i.owner == USER_KEY) if ROLE.max_topics(LIMITS) is not None else 0
 
+def _go(name: str) -> None:
+    st.session_state["selected_topic"] = name
+
+
+def _ask_delete(name: str) -> None:
+    st.session_state["ask_delete"] = name
+
+
+def _close_delete() -> None:
+    st.session_state.pop("ask_delete", None)
+
+
+# The pending delete stays in session state until 취소 / 삭제 / closing the dialog, so the dialog survives reruns.
+@st.dialog("주제 삭제", on_dismiss=_close_delete)
+def confirm_delete(name: str) -> None:
+    info = INFOS.get(name)
+    if info is None:
+        _close_delete()
+        st.rerun()
+    n_stored = len(cached_frame(name, data_version(), USER_KEY))
+    st.markdown(f"**{info.title or name}** 주제를 삭제할까요?")
+    st.caption(f"검색 키워드와 저장된 논문 {n_stored}건의 연결, 업데이트 기록이 삭제되며 되돌릴 수 없습니다. "
+               "다른 주제에도 속한 논문과 읽음 상태·메모를 단 논문은 남습니다.")
+    c1, c2 = st.columns(2)
+    if c1.button("취소", width="stretch", key="del_cancel"):
+        _close_delete()
+        st.rerun()
+    if c2.button("삭제", type="primary", width="stretch", icon=":material/delete:", key="del_ok"):
+        _close_delete()
+        delete_topic(name)
+
+
+OPTIONS = list(topics) + [NEW_TOPIC] + ([ADMIN_PAGE] if IS_ADMIN else [])
+topic_name = st.session_state.get("selected_topic")
+if topic_name not in OPTIONS + [MY_PAGE]:
+    topic_name = OPTIONS[0]
+
 with st.sidebar:
     st.markdown("### :material/menu_book: Paper Finder")
     st.caption("상위 저널 최신 논문 대시보드")
-    options = list(topics) + [NEW_TOPIC] + ([ADMIN_PAGE] if IS_ADMIN else [])
-    default_topic = st.session_state.get("selected_topic")
-    topic_name = st.selectbox("주제", options, format_func=topic_label,
-                              index=options.index(default_topic) if default_topic in options else 0)
+    # A dropdown of rows (topic | delete icon): a selectbox cannot hold a button per option.
+    st.caption("주제")
+    with st.popover(topic_label(topic_name), width="stretch", icon=":material/expand_more:"):
+        for n in topics:
+            c1, c2 = st.columns([6, 1], vertical_alignment="center")
+            c1.button(topic_label(n), key=f"pick_{n}", on_click=_go, args=(n,), width="stretch",
+                      type="primary" if n == topic_name else "tertiary")
+            if VISIBLE[n].owner == USER_KEY:
+                c2.button("", key=f"delicon_{n}", icon=":material/delete:", type="tertiary", help="주제 삭제",
+                          on_click=_ask_delete, args=(n,))
+        if topics:
+            st.divider()
+        st.button(NEW_TOPIC, key="pick__new", on_click=_go, args=(NEW_TOPIC,), width="stretch", type="tertiary")
+        if IS_ADMIN:
+            st.button(ADMIN_PAGE, key="pick__admin", on_click=_go, args=(ADMIN_PAGE,), width="stretch",
+                      type="tertiary")
     if AUTH and not EMAIL:
         st.info(f"맛보기 모드: 최근 {LIMITS.visitor_years}년 논문, 내 주제 {LIMITS.visitor_topics}개 "
                 f"(창을 닫으면 사라짐). 로그인하면 내 주제 {LIMITS.user_topics}개를 계속 쓸 수 있습니다.",
@@ -404,7 +454,7 @@ def new_topic_page() -> None:
                    + (f" 방문자 주제는 최근 {LIMITS.visitor_years}년 논문만 모으고, 창을 닫으면 사라집니다."
                       if ROLE.kind == "visitor" else ""))
         if used >= limit:
-            st.warning("더 만들 수 없습니다. 사이드바에서 내 주제를 고른 뒤 '주제 삭제'로 지우면 새로 만들 수 있습니다."
+            st.warning("더 만들 수 없습니다. 사이드바 주제 메뉴에서 주제 옆 휴지통 아이콘으로 지우면 새로 만들 수 있습니다."
                        + (" 로그인하면 더 많이 만들 수 있습니다." if ROLE.kind == "visitor" else ""))
             return
     llm = claude_client()
@@ -561,11 +611,7 @@ def admin_page() -> None:
         if not table.empty:
             with st.expander("주제 삭제", icon=":material/delete:"):
                 target = st.selectbox("지울 주제", list(INFOS), format_func=lambda n: f"{INFOS[n].title or n} ({n})")
-                st.caption("주제와 그 주제의 논문 연결·업데이트 기록이 지워지며 되돌릴 수 없습니다.")
-                confirm = st.text_input("확인을 위해 주제 ID를 그대로 입력하세요", key="admin_delete_confirm",
-                                        placeholder=target)
-                if st.button("삭제", key="admin_delete", type="primary", disabled=confirm.strip() != target):
-                    delete_topic(target)
+                st.button("삭제…", key="admin_delete", type="primary", on_click=_ask_delete, args=(target,))
 
     # -------------------------------------------------- runs
     with t_runs:
@@ -626,13 +672,52 @@ def admin_page() -> None:
                 bump_data_version()
 
 
-if topic_name in (NEW_TOPIC, ADMIN_PAGE):
+def my_page() -> None:
+    """Personal page (top-right button): who I am, my limits, and the new-paper report of each of my topics."""
+    st.title("내 페이지")
+    if AUTH:
+        st.caption(f"{ROLE.label}" + (f" · {EMAIL}" if EMAIL else ""))
+    limit = ROLE.max_topics(LIMITS)
+    st.caption(f"내 주제 {len(topics)}개" + (f" / 최대 {limit}개" if limit is not None else "")
+               + f" · 검색 기간 최대 {ROLE.max_years(LIMITS)}년")
+    st.subheader("신규 논문 리포트")
+    if not topics:
+        st.info("아직 주제가 없습니다. 사이드바 주제 메뉴의 '새 주제 만들기'로 시작하세요.")
+        return
+    st.caption("각 주제를 마지막으로 업데이트했을 때 새로 수집된 논문을 정리한 HTML 리포트입니다.")
+    for n in topics:
+        with st.container(border=True):
+            c1, c2 = st.columns([3, 2], vertical_alignment="center")
+            c1.markdown(f"**{topic_label(n)}**")
+            last = last_update(n, data_version())
+            c1.caption(f":material/schedule: {last}" if last else ":material/schedule: 아직 업데이트하지 않음")
+            report = cached_report(n, data_version(), topic_label(n))
+            if report is None:
+                c2.caption("업데이트를 한 번 실행하면 리포트가 생깁니다.")
+            else:
+                fname, html_bytes = report
+                c2.download_button(f"리포트 ({fname[:10]})", html_bytes, file_name=fname, mime="text/html",
+                                   width="stretch", icon=":material/download:", key=f"report_{n}")
+
+
+# Top-right corner: the personal page (or back to the last topic when already on it).
+_, corner = st.columns([5, 1])
+if topic_name == MY_PAGE:
+    back = st.session_state.get("before_my_page")
+    corner.button("돌아가기", icon=":material/arrow_back:", width="stretch", key="my_page_back",
+                  on_click=_go, args=(back if back in OPTIONS else OPTIONS[0],))
+else:
+    st.session_state["before_my_page"] = topic_name
+    corner.button("내 페이지", icon=":material/account_circle:", width="stretch", key="my_page_btn",
+                  on_click=_go, args=(MY_PAGE,))
+
+if pending_delete := st.session_state.get("ask_delete"):
+    confirm_delete(pending_delete)
+
+if topic_name in (NEW_TOPIC, ADMIN_PAGE, MY_PAGE):
     with st.sidebar:
         sidebar_footer()
-    if topic_name == NEW_TOPIC:
-        new_topic_page()
-    else:
-        admin_page()
+    {NEW_TOPIC: new_topic_page, ADMIN_PAGE: admin_page, MY_PAGE: my_page}[topic_name]()
     st.stop()
 
 with st.sidebar:
@@ -662,31 +747,12 @@ with st.sidebar:
     st.divider()
     last = last_update(topic_name, data_version())
     st.caption(f":material/schedule: 마지막 업데이트  \n{last}" if last else ":material/schedule: 아직 업데이트하지 않음")
-    report = cached_report(topic_name, data_version(), topic_label(topic_name))
-    if report is not None:
-        name, html_bytes = report
-        st.download_button(f"신규 논문 리포트 ({name[:10]})", html_bytes, file_name=name, mime="text/html",
-                           width="stretch", icon=":material/description:",
-                           help="마지막 업데이트 때 새로 수집된 논문을 정리한 HTML 리포트")
     if IS_ADMIN and not load_settings().anthropic_api_key:
         st.caption(":material/warning: Claude API 키 없음: 오탐 판정·요약·용어 제안이 꺼져 있습니다 "
                    "(`.env`의 ANTHROPIC_API_KEY).")
     if IS_ADMIN and not load_settings().openalex_api_key:
         st.caption(":material/warning: OpenAlex API 키 없음: 검색이 몰리면 보완 검색이 실패할 수 있습니다 "
                    "(`.env`의 OPENALEX_API_KEY).")
-
-    if CAN_MANAGE:
-        st.divider()
-        with st.popover("주제 삭제", width="stretch", icon=":material/delete:"):
-            n_stored = len(cached_frame(topic_name, data_version(), USER_KEY))
-            shown = topic_label(topic_name)
-            st.markdown(f"**{shown}** 주제를 지웁니다.")
-            st.caption(f"검색 키워드와 저장된 논문 {n_stored}건의 연결, 업데이트 기록이 삭제되며 되돌릴 수 없습니다. "
-                       "다른 주제에도 속한 논문과 읽음 상태·메모를 단 논문은 남습니다.")
-            confirm = st.text_input("확인을 위해 주제 이름을 그대로 입력하세요", key=f"del_confirm_{topic_name}",
-                                    placeholder=shown)
-            if st.button("삭제", type="primary", disabled=confirm.strip() != shown, key=f"del_{topic_name}"):
-                delete_topic(topic_name)
 
     sidebar_footer()
 

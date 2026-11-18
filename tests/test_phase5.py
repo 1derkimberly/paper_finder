@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app_helpers import NEW, go, menu
 from paper_finder import db, update as update_mod
 from paper_finder.config import load_topics
 from conftest import FIXTURE_TOPICS
@@ -177,7 +178,7 @@ def test_app_new_topic_starts_with_claude(tmp_path, monkeypatch):
     monkeypatch.setattr(llm_mod, "suggest_terms", fake_suggest)
 
     at = AppTest.from_file("../app.py", default_timeout=30).run()
-    at.sidebar.selectbox[0].set_value("＋ 새 주제 만들기").run()
+    go(at, NEW)
     assert not at.exception, [e.value for e in at.exception]
     btn = next(b for b in at.button if b.label == "Claude 용어 제안 받기")
     btn.click().run()                                   # empty description -> warning, no Claude call
@@ -238,16 +239,36 @@ def test_app_delete_topic(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "DEFAULT_DB", tmp_path / "t.db")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     at = AppTest.from_file("../app.py", default_timeout=30).run()
-    name = at.sidebar.selectbox[0].value
-    assert at.button(key=f"del_{name}").disabled               # needs the topic name typed
-    at.text_input(key=f"del_confirm_{name}").input("wrong").run()
-    assert at.button(key=f"del_{name}").disabled
-    at.text_input(key=f"del_confirm_{name}").input(name).run()
-    assert not at.button(key=f"del_{name}").disabled
-    at.button(key=f"del_{name}").click().run()
+    name = menu(at)[0]
+    at.button(key=f"delicon_{name}").click().run()             # trash icon next to the topic in the menu
+    assert not at.exception, [e.value for e in at.exception]
+    assert name in load_topics(tmp_path / "topics.yaml")       # not yet: a confirmation dialog is open
+    at.button(key="del_ok").click().run()
     assert not at.exception, [e.value for e in at.exception]
     assert name not in load_topics(tmp_path / "topics.yaml")
-    assert name not in at.sidebar.selectbox[0].options
+    assert name not in menu(at)
+
+
+def test_app_my_page_has_reports(tmp_path, monkeypatch):
+    import shutil
+
+    from streamlit.testing.v1 import AppTest
+
+    import paper_finder.config as cfg
+    for f in ("topics.yaml", "journals.yaml"):
+        shutil.copy(cfg.CONFIG_DIR / f, tmp_path / f)
+    monkeypatch.setattr(cfg, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "DEFAULT_DB", tmp_path / "t.db")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    at = AppTest.from_file("../app.py", default_timeout=30).run()
+    first = menu(at)[0]
+    assert not any((b.label or "").startswith("신규 논문 리포트") for b in at.sidebar.button)
+    at.button(key="my_page_btn").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert at.title[0].value == "내 페이지"
+    assert any("업데이트를 한 번 실행하면" in c.value for c in at.caption)   # no run yet -> no report
+    at.button(key="my_page_back").click().run()
+    assert at.session_state["selected_topic"] == first
 
 
 def test_app_recommends_next_terms(tmp_path, monkeypatch):

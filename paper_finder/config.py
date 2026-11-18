@@ -30,6 +30,15 @@ class Topic:
             "exclude_phrases": self.exclude_phrases,
         }
 
+    @classmethod
+    def from_dict(cls, name: str, body: dict) -> Topic:
+        facets = {k: [str(t) for t in v] for k, v in (body.get("facets") or {}).items() if v}
+        exact = [str(p) for p in body.get("exact_phrases") or []]
+        if not facets and not exact:
+            raise ValueError(f"topic '{name}' has neither facets nor exact_phrases")
+        return cls(name=name, facets=facets, exact_phrases=exact,
+                   exclude_phrases=[str(p) for p in body.get("exclude_phrases") or []])
+
 
 @dataclass
 class Settings:
@@ -40,6 +49,8 @@ class Settings:
     anthropic_api_key: str | None
     claude_model: str | None = None         # term suggestions (default llm.DEFAULT_MODEL)
     claude_judge_model: str | None = None   # relevance verdicts + summaries (default llm.DEFAULT_JUDGE_MODEL)
+    database_url: str | None = None         # postgres://… (deployed); empty = local SQLite file
+    admin_emails: tuple[str, ...] = ()      # who may manage topics / run updates when login is on
 
 
 @dataclass
@@ -56,20 +67,7 @@ def _read_yaml(path: Path) -> dict:
 
 
 def load_topics(path: Path = CONFIG_DIR / "topics.yaml") -> dict[str, Topic]:
-    raw = _read_yaml(path)
-    topics: dict[str, Topic] = {}
-    for name, body in raw.items():
-        facets = {k: [str(t) for t in v] for k, v in (body.get("facets") or {}).items() if v}
-        exact = [str(p) for p in body.get("exact_phrases") or []]
-        if not facets and not exact:
-            raise ValueError(f"topic '{name}' has neither facets nor exact_phrases")
-        topics[name] = Topic(
-            name=name,
-            facets=facets,
-            exact_phrases=exact,
-            exclude_phrases=[str(p) for p in body.get("exclude_phrases") or []],
-        )
-    return topics
+    return {name: Topic.from_dict(name, body or {}) for name, body in _read_yaml(path).items()}
 
 
 TOPIC_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -81,12 +79,16 @@ TOPICS_HEADER = """\
 """
 
 
-def save_topic(topic: Topic, path: Path = CONFIG_DIR / "topics.yaml") -> None:
-    """Add or replace one topic in topics.yaml."""
+def validate_topic(topic: Topic) -> None:
     if not TOPIC_NAME_RE.match(topic.name):
         raise ValueError("주제 이름은 영문, 숫자, _, - 만 쓸 수 있습니다")
     if not topic.facets and not topic.exact_phrases:
         raise ValueError("facet 또는 exact phrase가 하나 이상 있어야 합니다")
+
+
+def save_topic(topic: Topic, path: Path = CONFIG_DIR / "topics.yaml") -> None:
+    """Add or replace one topic in topics.yaml."""
+    validate_topic(topic)
     raw = _read_yaml(path) if path.exists() else {}
     raw[topic.name] = topic.to_dict()
     body = yaml.safe_dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=None, width=120)
@@ -139,4 +141,6 @@ def load_settings() -> Settings:
         anthropic_api_key=get("ANTHROPIC_API_KEY"),
         claude_model=get("CLAUDE_MODEL"),
         claude_judge_model=get("CLAUDE_JUDGE_MODEL"),
+        database_url=get("DATABASE_URL"),
+        admin_emails=tuple(e.strip().lower() for e in (get("ADMIN_EMAILS") or "").split(",") if e.strip()),
     )

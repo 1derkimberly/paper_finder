@@ -35,9 +35,9 @@ class UpdateResult:
     warnings: list[str] = field(default_factory=list)
 
 
-def report_since(db_path: Path, topic: str, today: date) -> date:
+def report_since(db_path: db.DBTarget, topic: str, today: date) -> date:
     """Start of the next report: the day of the previous successful update (first time: one week back)."""
-    if db_path.exists():
+    if db.exists(db_path):
         conn = db.connect(db_path)
         try:
             prev = db.last_run(conn, topic)
@@ -48,7 +48,7 @@ def report_since(db_path: Path, topic: str, today: date) -> date:
     return today - timedelta(days=FIRST_REPORT_DAYS)
 
 
-def update_topic(topic: Topic, journal_groups: dict[str, list[str]], db_path: Path, pubmed: PubMedClient,
+def update_topic(topic: Topic, journal_groups: dict[str, list[str]], db_path: db.DBTarget, pubmed: PubMedClient,
                  openalex: OpenAlexClient | None = None, openalex_sources: list[OpenAlexSource] | None = None,
                  llm: ClaudeClient | None = None, years: int = 5, trigger: str = "cli",
                  today: date | None = None, reports_dir: Path = REPORTS_DIR,

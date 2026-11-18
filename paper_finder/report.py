@@ -5,11 +5,12 @@ from __future__ import annotations
 import html
 import os
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
 
+from paper_finder import db
 from paper_finder.config import ROOT
 from paper_finder.dashboard_data import display_title, load_frame, rejected_mask
 
@@ -30,7 +31,7 @@ class Report:
         return len(self.papers)
 
 
-def new_papers(db_path: Path, topic: str, journal_groups: dict[str, list[str]], since: date,
+def new_papers(db_path: "db.DBTarget", topic: str, journal_groups: dict[str, list[str]], since: date,
                today: date | None = None) -> Report:
     """Papers of `topic` first stored on or after `since`."""
     today = today or date.today()
@@ -144,6 +145,26 @@ def write_report(rep: Report, out_dir: Path = REPORTS_DIR) -> Path:
     path = stem.with_suffix(".html")
     path.write_text(to_html(rep), encoding="utf-8")
     return path
+
+
+def last_update_report(target: db.DBTarget, topic: str,
+                       journal_groups: dict[str, list[str]]) -> tuple[str, bytes] | None:
+    """Report of the last successful update, rebuilt from the database (a deployed app keeps no files):
+    papers first stored since the update before it. Returns (file name, HTML bytes)."""
+    if not db.exists(target):
+        return None
+    conn = db.connect(target)
+    try:
+        runs = conn.execute("SELECT started_at FROM runs WHERE topic = ? AND error IS NULL "
+                            "ORDER BY started_at DESC, id DESC LIMIT 2", (topic,)).fetchall()
+    finally:
+        conn.close()
+    if not runs:
+        return None
+    today = date.fromisoformat(runs[0]["started_at"][:10])
+    since = date.fromisoformat(runs[1]["started_at"][:10]) if len(runs) > 1 else today - timedelta(days=7)
+    rep = new_papers(target, topic, journal_groups, since, today)
+    return f"{today.isoformat()}_{topic}.html", to_html(rep).encode("utf-8")
 
 
 def latest_report(topic: str, out_dir: Path = REPORTS_DIR) -> Path | None:

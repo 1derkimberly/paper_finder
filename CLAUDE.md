@@ -98,6 +98,15 @@ tests/                 pytest (network 마커는 실제 API 호출)
 - 디자인: `.streamlit/config.toml` 테마(파란 강조색 #2a78d6 = 차트 색, Pretendard, light/dark 따로). 본문 = 헤더 → 필터 상자 → 지표 카드 4개 → [논문 | 동향] 탭, 논문은 카드 보기·최신순이 기본. '읽음' 카드는 흐리게(컨테이너 key `readcard_*` + CSS, 마우스를 올리면 선명). `use_container_width` 대신 `width="stretch"`
 - `st.cache_data` 캐시 키(`data_version()`)에 DB 파일 수정 시각을 넣는다. 그래야 CLI·주간 자동 업데이트로 바뀐 DB가 켜져 있는 대시보드에 바로 보인다
 - 미리보기용 별도 데이터: `PAPER_FINDER_CONFIG`·`PAPER_FINDER_DB`·`PAPER_FINDER_REPORTS` 환경 변수로 다른 폴더를 가리킬 수 있다 (`.claude/launch.json` 의 dashboard-demo, 포트 8502)
+- 공개 배포([docs/DEPLOY.md](docs/DEPLOY.md)): Streamlit Community Cloud + Supabase Postgres + GitHub Actions(월·목 업데이트)
+  - `DATABASE_URL`(postgres://)이 있으면 Postgres, 없으면 SQLite. `db.Conn` 이 `?`→`%s` 변환, INSERT는 `RETURNING id`. Supabase는 transaction pooler(6543) + `prepare_threshold=None`
+  - 배포 모드에선 주제 정의를 DB `topic_defs` 에 저장 (`topics_store.TopicStore`). DB가 비면 `config/topics.yaml` 에서 복사
+  - secrets에 `[auth]` 가 있으면 구글 로그인(st.login). 역할(`quota.Role`): 방문자(anon:<세션>, 최근 1년·주제 1개·세션 한정), 로그인(이메일, 주제 3개), 관리자(`ADMIN_EMAILS`, 제한 없음 + ⚙ 관리 화면). 로컬(secrets 없음)은 관리자 1명
+  - 주제 소유: `topic_defs.owner` (''=관리자/공개, 이메일, anon:*). 비관리자 주제 ID는 `이름-<owner 해시 6자>`, 표시 이름은 `title`. 공개 주제 + 내 주제만 보이고(관리자는 전부), 고치기·업데이트·삭제는 소유자/관리자만
+  - Claude 사용은 `api_usage` 에 기록(`quota.claude_for`), 방문자+로그인 합계가 하루 한도(`app_settings.daily_budget_usd`, 기본 $1)를 넘으면 그날 Claude 기능 중단. 관리자·자동 업데이트(role system)는 막지 않음
+  - 한도 값은 `app_settings` (관리 화면에서 수정). 만료 방문자 주제 정리는 `maintenance.cleanup` (`update` 전에 자동, `cleanup` 명령, 관리 화면 버튼)
+  - 리포트는 파일 대신 DB에서 다시 만든다 (`report.last_update_report`). Streamlit secrets 최상위 문자열은 `_secrets_to_env()` 로 환경 변수에 복사
+  - 테스트: `PAPER_FINDER_FAKE_LOGIN`(""=방문자, 이메일=로그인)으로 역할 시뮬레이션. Postgres 테스트는 `TEST_DATABASE_URL` 이 있을 때만
 - 테스트는 `tests/fixtures/topics.yaml` 을 쓴다 (conftest가 매 테스트 임시 config 폴더로 `CONFIG_DIR` 교체). 사용자의 `config/topics.yaml` 은 대시보드에서 바뀌므로 테스트가 기대면 안 된다
 - 주제 삭제(사이드바 '주제 삭제', 주제 이름을 입력해야 버튼이 켜짐): `topics.yaml` 항목·`topics`·`topic_papers`·`runs` 삭제. 어느 주제에도 안 속하게 된 논문은 지우되 `user_marks` 가 있는 논문은 남긴다. 리포트 파일은 둔다
 - Claude 용어 제안은 바로 저장하지 않고 키워드 편집기에 넣기만 한다 (사용자가 '키워드 저장'으로 확정).

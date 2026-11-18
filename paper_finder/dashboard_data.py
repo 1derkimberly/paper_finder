@@ -39,13 +39,13 @@ def _pub_dt(s: str | None) -> pd.Timestamp:
     return pd.to_datetime("-".join(parts), errors="coerce")
 
 
-def load_frame(db_path: Path, topic_name: str, journal_groups: dict[str, list[str]],
-               today: date | None = None) -> pd.DataFrame:
-    if not db_path.exists():
+def load_frame(db_path: db.DBTarget, topic_name: str, journal_groups: dict[str, list[str]],
+               today: date | None = None, user: str = "") -> pd.DataFrame:
+    if not db.exists(db_path):
         return pd.DataFrame(columns=COLUMNS)
     conn = db.connect(db_path)
     try:
-        rows = db.topic_papers(conn, topic_name)
+        rows = db.topic_papers(conn, topic_name, user)
     finally:
         conn.close()
     if not rows:

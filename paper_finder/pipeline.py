@@ -98,7 +98,7 @@ def enrich_papers(oa: OpenAlexClient, papers: list[Paper]) -> EnrichStats:
 
 
 def run(client: PubMedClient, topic: Topic, journal_groups: dict[str, list[str]],
-        start: date, end: date, db_path: Path | None = None, dry_run: bool = False,
+        start: date, end: date, db_path: db.DBTarget | None = None, dry_run: bool = False,
         openalex: OpenAlexClient | None = None,
         openalex_sources: list[OpenAlexSource] | None = None) -> RunResult:
     res = RunResult(groups=search_groups(client, topic, journal_groups, start, end))
@@ -153,13 +153,13 @@ class JudgeStats:
     skipped: int = 0                 # left for later because of the per-call limit
 
 
-def judge_topic(llm: ClaudeClient, topic: Topic, db_path: Path, force: bool = False, batch_size: int = 10,
+def judge_topic(llm: ClaudeClient, topic: Topic, db_path: db.DBTarget, force: bool = False, batch_size: int = 10,
                 progress: Callable[[int, int], None] | None = None, limit: int | None = None) -> JudgeStats:
     """Claude relevance verdict + one-line summary for the topic's papers that have none yet.
     Rejected papers stay in the DB (the dashboard hides them by default). With `limit`, at most that many
     papers are sent (newest first); the rest wait for the next call (`stats.skipped`)."""
     stats = JudgeStats()
-    if not db_path.exists():
+    if not db.exists(db_path):
         return stats
     conn = db.connect(db_path)
     try:
@@ -191,7 +191,7 @@ def judge_topic(llm: ClaudeClient, topic: Topic, db_path: Path, force: bool = Fa
     return stats
 
 
-def enrich_db(oa: OpenAlexClient, db_path: Path) -> EnrichStats:
+def enrich_db(oa: OpenAlexClient, db_path: db.DBTarget) -> EnrichStats:
     """Refresh citation counts / OA links for every paper with a DOI in the database."""
     conn = db.connect(db_path)
     try:

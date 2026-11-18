@@ -13,10 +13,13 @@ import yaml
 from paper_finder import db, schedule
 from paper_finder.notify import notify
 from paper_finder.report import new_papers, write_report
+from paper_finder.topics_store import TopicStore
+from paper_finder.maintenance import cleanup
+from paper_finder.quota import claude_for, load_limits
 from paper_finder.update import update_topic
 from paper_finder.config import (CONFIG_DIR, DEFAULT_DB, load_journals, load_openalex_sources, load_settings,
                                  load_topics)
-from paper_finder.llm import DEFAULT_JUDGE_MODEL, ClaudeClient, LLMError, suggest_terms
+from paper_finder.llm import DEFAULT_JUDGE_MODEL, DEFAULT_MODEL, ClaudeClient, LLMError, suggest_terms
 from paper_finder.openalex import OpenAlexClient, OpenAlexError
 from paper_finder.pipeline import JudgeStats, enrich_db, judge_topic, run
 from paper_finder.dashboard_data import display_title
@@ -32,7 +35,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="paper_finder", description="Recent top-journal papers by topic.")
     ap.add_argument("--topics", type=Path, default=CONFIG_DIR / "topics.yaml")
     ap.add_argument("--journals", type=Path, default=CONFIG_DIR / "journals.yaml")
-    ap.add_argument("--db", type=Path, default=DEFAULT_DB)
+    ap.add_argument("--db", help="SQLite file or postgres URL (default: DATABASE_URL, else data/papers.db)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("search", help="search PubMed and store results")
@@ -77,9 +80,17 @@ def _build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--day", default="MON", help="MON..SUN (default MON)")
     sc.add_argument("--at", default="09:00", help="HH:MM (default 09:00)")
 
+    cl = sub.add_parser("cleanup", help="delete expired visitor topics and papers nothing refers to")
+    cl.add_argument("--hours", type=int, help="visitor topic lifetime (default: admin setting, 24)")
+
     sub.add_parser("enrich", help="refresh OpenAlex citation counts / OA links for all stored papers")
     sub.add_parser("topics", help="list configured topics and journal groups")
     return ap
+
+
+def _topics(args, include_visitors: bool = True) -> dict:
+    """Topic definitions: topics.yaml locally, the database when DATABASE_URL points to Postgres."""
+    return TopicStore(args.db, args.topics).load(include_visitors=include_visitors)
 
 
 def _openalex_client() -> OpenAlexClient:
@@ -87,14 +98,16 @@ def _openalex_client() -> OpenAlexClient:
     return OpenAlexClient(api_key=s.openalex_api_key, mailto=s.openalex_mailto)
 
 
-def _claude_client(judge: bool = False) -> ClaudeClient | None:
-    """judge=True: relevance verdicts (CLAUDE_JUDGE_MODEL, Haiku by default); else term suggestions."""
+def _claude_client(judge: bool = False, db_target=None, role: str = "admin") -> ClaudeClient | None:
+    """judge=True: relevance verdicts (CLAUDE_JUDGE_MODEL, Haiku by default); else term suggestions.
+    With db_target, every request is logged to api_usage (the admin screen's cost table)."""
     s = load_settings()
     if not s.anthropic_api_key:
         return None
-    if judge:
-        return ClaudeClient(api_key=s.anthropic_api_key, model=s.claude_judge_model or DEFAULT_JUDGE_MODEL)
-    return ClaudeClient(api_key=s.anthropic_api_key, model=s.claude_model)
+    model = (s.claude_judge_model or DEFAULT_JUDGE_MODEL) if judge else (s.claude_model or DEFAULT_MODEL)
+    if db_target is not None:
+        return claude_for(db_target, role, "system" if role == "system" else "", s.anthropic_api_key, model)
+    return ClaudeClient(api_key=s.anthropic_api_key, model=model)
 
 
 def _judge(llm: ClaudeClient, topic, db_path: Path, force: bool = False) -> JudgeStats:
@@ -113,7 +126,7 @@ def _print_enrich(stats) -> None:
 
 
 def _cmd_search(args) -> int:
-    topics = load_topics(args.topics)
+    topics = _topics(args)
     if args.topic not in topics:
         print(f"unknown topic '{args.topic}'. available: {', '.join(topics)}", file=sys.stderr)
         return 2
@@ -157,7 +170,7 @@ def _cmd_search(args) -> int:
     for p, reason in res.excluded:
         print(f"  - excluded ({reason}): {p.title[:90]}  [{p.journal}]")
     if not args.no_llm and res.kept:
-        llm = _claude_client(judge=True)
+        llm = _claude_client(judge=True, db_target=args.db)
         if llm is None:
             print("Claude check skipped (no ANTHROPIC_API_KEY)")
         else:
@@ -169,16 +182,16 @@ def _cmd_search(args) -> int:
             cites = f"  cited:{p.cited_by}" if p.cited_by is not None else ""
             print(f"{i:3d}. [{s.relevance:.0f}] {display_title(p.title, is_review(p.pub_types))[:100]}")
             print(f"      {p.journal}, {p.pub_date}  doi:{p.doi or '-'}  pmid:{p.pmid or '-'}{cites}")
-    print(f"\nsaved to {args.db}")
+    print(f"\nsaved to {db.describe(args.db)}")
     return 0
 
 
 def _cmd_judge(args) -> int:
-    topics = load_topics(args.topics)
+    topics = _topics(args)
     if args.topic not in topics:
         print(f"unknown topic '{args.topic}'. available: {', '.join(topics)}", file=sys.stderr)
         return 2
-    llm = _claude_client(judge=True)
+    llm = _claude_client(judge=True, db_target=args.db)
     if llm is None:
         print("ANTHROPIC_API_KEY is not set (.env)", file=sys.stderr)
         return 1
@@ -189,7 +202,7 @@ def _cmd_judge(args) -> int:
 def _cmd_expand(args) -> int:
     current = None
     if args.topic:
-        topics = load_topics(args.topics)
+        topics = _topics(args)
         if args.topic not in topics:
             print(f"unknown topic '{args.topic}'", file=sys.stderr)
             return 2
@@ -214,7 +227,12 @@ def _cmd_expand(args) -> int:
 
 
 def _cmd_update(args) -> int:
-    topics = load_topics(args.topics)
+    in_db = TopicStore(args.db, args.topics).in_db
+    if in_db:  # public service: drop expired visitor topics first; visitor topics are never auto-updated
+        st = cleanup(args.db, load_limits(args.db).visitor_topic_hours)
+        if st.visitor_topics or st.papers:
+            print(f"cleanup: {st.visitor_topics} expired visitor topics, {st.papers} unused papers removed")
+    topics = _topics(args, include_visitors=not in_db or bool(args.topics_to_update))
     names = args.topics_to_update or list(topics)
     unknown = [n for n in names if n not in topics]
     if unknown:
@@ -223,7 +241,8 @@ def _cmd_update(args) -> int:
     groups = load_journals(args.journals)
     settings = load_settings()
     pubmed = PubMedClient(api_key=settings.ncbi_api_key, email=settings.ncbi_email)
-    llm = None if args.no_llm else _claude_client(judge=True)
+    llm = None if args.no_llm else _claude_client(
+        judge=True, db_target=args.db, role="system" if args.trigger == "schedule" else "admin")
     print(f"{datetime.now():%Y-%m-%d %H:%M}  update {', '.join(names)}"
           + ("" if llm else "  (Claude check off)"))
 
@@ -255,7 +274,7 @@ def _cmd_update(args) -> int:
 
 
 def _cmd_report(args) -> int:
-    topics = load_topics(args.topics)
+    topics = _topics(args)
     if args.topic not in topics:
         print(f"unknown topic '{args.topic}'", file=sys.stderr)
         return 2
@@ -283,7 +302,7 @@ def _cmd_schedule(args) -> int:
 
 
 def _cmd_enrich(args) -> int:
-    if not args.db.exists():
+    if not db.exists(args.db):
         print(f"no database at {args.db}; run `search` first", file=sys.stderr)
         return 1
     try:
@@ -296,7 +315,7 @@ def _cmd_enrich(args) -> int:
 
 
 def _cmd_list(args) -> int:
-    if not args.db.exists():
+    if not db.exists(args.db):
         print(f"no database at {args.db}; run `search` first", file=sys.stderr)
         return 1
     conn = db.connect(args.db)
@@ -323,8 +342,16 @@ def _cmd_list(args) -> int:
     return 0
 
 
+def _cmd_cleanup(args) -> int:
+    hours = args.hours if args.hours is not None else load_limits(args.db).visitor_topic_hours
+    st = cleanup(args.db, hours)
+    print(f"removed: {st.visitor_topics} expired visitor topics, {st.visitor_marks} visitor marks, "
+          f"{st.papers} unused papers")
+    return 0
+
+
 def _cmd_topics(args) -> int:
-    for name, t in load_topics(args.topics).items():
+    for name, t in _topics(args).items():
         print(f"{name}: facets={list(t.facets)}  exact={len(t.exact_phrases)}  exclude={len(t.exclude_phrases)}")
     for g, js in load_journals(args.journals).items():
         print(f"  journals/{g}: {len(js)}")
@@ -336,6 +363,8 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     args = _build_parser().parse_args(argv)
+    target = args.db or load_settings().database_url or DEFAULT_DB
+    args.db = target if db.is_postgres(target) else Path(target)
     return {"search": _cmd_search, "list": _cmd_list, "enrich": _cmd_enrich, "judge": _cmd_judge,
             "expand": _cmd_expand, "topics": _cmd_topics, "update": _cmd_update, "report": _cmd_report,
-            "schedule": _cmd_schedule}[args.cmd](args)
+            "schedule": _cmd_schedule, "cleanup": _cmd_cleanup}[args.cmd](args)

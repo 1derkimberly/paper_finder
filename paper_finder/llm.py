@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -19,6 +20,18 @@ DEFAULT_JUDGE_MODEL = "claude-haiku-5-5"
 # On a safety-classifier refusal the API retries the request on a fallback model in the same call.
 # Haiku models have no server-side fallback, so the parameter is left off for them.
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
+# USD per million tokens (input, output) for the cost estimate / daily budget. Unknown models count as Sonnet.
+PRICES = {
+    "claude-haiku-5-5": (0.10, 0.50),
+    "claude-sonnet-5-5": (2.0, 10.0),
+    "claude-opus-5-5": (4.0, 20.0),
+}
+
+
+def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    pin, pout = PRICES.get(model, PRICES["claude-sonnet-5-5"])
+    return (input_tokens * pin + output_tokens * pout) / 1_000_000
 
 
 class LLMError(RuntimeError):
@@ -44,11 +57,20 @@ class Suggestion:
 class ClaudeClient:
     """Thin wrapper: one structured-JSON request per call, errors mapped to LLMError."""
 
-    def __init__(self, api_key: str | None = None, model: str | None = None, client: Any = None):
+    def __init__(self, api_key: str | None = None, model: str | None = None, client: Any = None,
+                 on_usage: Callable[[str, str, int, int, float], None] | None = None,
+                 budget_check: Callable[[], str | None] | None = None):
+        """on_usage(kind, model, input_tokens, output_tokens, cost_usd) is called after each request;
+        budget_check() returning a message blocks the request with LLMError(message)."""
         self.model = model or DEFAULT_MODEL
         self._client = client if client is not None else anthropic.Anthropic(api_key=api_key)
+        self.on_usage = on_usage
+        self.budget_check = budget_check
 
-    def json(self, system: str, user: str, schema: dict, effort: str = "low", max_tokens: int = 16000) -> dict:
+    def json(self, system: str, user: str, schema: dict, effort: str = "low", max_tokens: int = 16000,
+             kind: str = "other") -> dict:
+        if self.budget_check is not None and (msg := self.budget_check()):
+            raise LLMError(msg)
         kwargs: dict[str, Any] = {}
         if not self.model.startswith("claude-haiku"):
             kwargs = {"betas": [FALLBACK_BETA], "fallbacks": "default"}
@@ -73,6 +95,10 @@ class ClaudeClient:
             raise LLMError(f"Claude API 오류 ({e.status_code}): {e.message}") from e
         except anthropic.APIConnectionError as e:
             raise LLMError(f"Claude API 연결 실패: {e}") from e
+        usage = getattr(resp, "usage", None)
+        if self.on_usage is not None and usage is not None:
+            tin, tout = int(getattr(usage, "input_tokens", 0) or 0), int(getattr(usage, "output_tokens", 0) or 0)
+            self.on_usage(kind, self.model, tin, tout, estimate_cost(self.model, tin, tout))
         if resp.stop_reason == "refusal":
             raise LLMError("Claude가 요청을 처리하지 않았습니다 (refusal)")
         if resp.stop_reason == "max_tokens":
@@ -161,7 +187,7 @@ def suggest_terms(llm: ClaudeClient, description: str, current: Topic | None = N
         parts.append(f"Current search definition:\n{_topic_block(current)}")
     if not parts:
         raise ValueError("주제 설명이나 기존 키워드가 필요합니다")
-    data = llm.json(_SUGGEST_SYSTEM, "\n\n".join(parts), _SUGGEST_SCHEMA, effort="medium")
+    data = llm.json(_SUGGEST_SYSTEM, "\n\n".join(parts), _SUGGEST_SCHEMA, effort="medium", kind="suggest")
 
     known = set()
     if current is not None:
@@ -204,7 +230,7 @@ def next_terms(llm: ClaudeClient, topic: Topic, facet: str, typed: list[str], to
         return []
     user = (f"Current search definition:\n{_topic_block(topic)}\n\nFacet being edited: '{facet}'\n"
             f"Terms typed so far for this facet: {', '.join(typed)}\n\nSuggest up to {top} next terms.")
-    data = llm.json(_NEXT_SYSTEM, user, _NEXT_SCHEMA, effort="low", max_tokens=2000)
+    data = llm.json(_NEXT_SYSTEM, user, _NEXT_SCHEMA, effort="low", max_tokens=2000, kind="next")
     known = {t.lower() for ts in topic.facets.values() for t in ts}
     known |= {t.lower() for t in topic.exact_phrases + topic.exclude_phrases + typed}
     return _clean(data["terms"], known)[:top]
@@ -269,7 +295,7 @@ def judge_papers(llm: ClaudeClient, topic: Topic, papers: list[PaperText]) -> di
         blocks.append(f"<paper id=\"{p.id}\">\nTitle: {p.title}\nJournal: {p.journal}\n"
                       f"Abstract: {p.abstract or '(no abstract available)'}\n</paper>")
     data = llm.json(_JUDGE_SYSTEM.format(topic=_topic_block(topic)), "\n\n".join(blocks), _JUDGE_SCHEMA,
-                    effort="low")
+                    effort="low", kind="judge")
     wanted = {p.id for p in papers}
     out = {}
     for e in data["papers"]:

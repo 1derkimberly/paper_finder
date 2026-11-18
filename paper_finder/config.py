@@ -37,6 +37,7 @@ class Settings:
     openalex_mailto: str | None
     openalex_api_key: str | None
     anthropic_api_key: str | None
+    claude_model: str | None = None
 
 
 @dataclass
@@ -120,4 +121,5 @@ def load_settings() -> Settings:
         openalex_mailto=get("OPENALEX_MAILTO"),
         openalex_api_key=get("OPENALEX_API_KEY"),
         anthropic_api_key=get("ANTHROPIC_API_KEY"),
+        claude_model=get("CLAUDE_MODEL"),
     )

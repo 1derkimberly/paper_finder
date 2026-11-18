@@ -12,10 +12,12 @@ from paper_finder import db
 from paper_finder.config import (CONFIG_DIR, DEFAULT_DB, Topic, load_journals, load_openalex_sources,
                                  load_settings, load_topics, save_topic)
 from paper_finder.dashboard_data import (SORTS, Filters, apply_filters, citation_coverage, display_title,
-                                         load_frame, metrics, per_journal, per_year, sort_frame, term_frequency)
+                                         load_frame, metrics, per_journal, per_year, rejected_mask, sort_frame,
+                                         term_frequency)
 from paper_finder.export import to_bibtex, to_csv
+from paper_finder.llm import ClaudeClient, LLMError, suggest_terms
 from paper_finder.openalex import OpenAlexClient, OpenAlexError
-from paper_finder.pipeline import enrich_db, run
+from paper_finder.pipeline import enrich_db, judge_topic, run
 from paper_finder.pubmed import PubMedClient
 from paper_finder.query import build_query, years_ago
 
@@ -85,6 +87,27 @@ def openalex_client() -> OpenAlexClient:
     return OpenAlexClient(api_key=s.openalex_api_key, mailto=s.openalex_mailto)
 
 
+def claude_client() -> ClaudeClient | None:
+    s = load_settings()
+    return ClaudeClient(api_key=s.anthropic_api_key, model=s.claude_model) if s.anthropic_api_key else None
+
+
+def run_judge(topic: Topic, force: bool = False) -> None:
+    """Claude relevance verdict + summary for papers without one. Call inside a status/container."""
+    llm = claude_client()
+    if llm is None:
+        return
+    bar = st.progress(0.0, text="Claude 관련성 판정·요약 중…")
+    stats = judge_topic(llm, topic, DB_PATH, force=force,
+                        progress=lambda d, n: bar.progress(d / n, text=f"Claude 판정 {d}/{n}"))
+    bar.empty()
+    if stats.pending:
+        st.write(f"Claude 판정: {stats.judged}/{stats.pending}건, 관련 없음 {stats.rejected}건 ({llm.model})")
+    if stats.error:
+        st.warning(f"Claude 판정 중단: {stats.error}")
+    bump_data_version()
+
+
 def run_update(topic: Topic, groups: dict[str, list[str]], years: int) -> None:
     end = date.today()
     start = years_ago(end, years)
@@ -108,6 +131,8 @@ def run_update(topic: Topic, groups: dict[str, list[str]], years: int) -> None:
             st.warning(w)
         for p, reason in res.excluded:
             st.caption(f"제외 ({reason}): {p.title}")
+        if res.kept:
+            run_judge(topic)
         status.update(label=f"업데이트 완료: {len(res.kept)}건 (신규 {res.new_count}건)",
                       state="complete" if not res.warnings else "error", expanded=bool(res.warnings))
     bump_data_version()
@@ -168,6 +193,14 @@ with st.sidebar:
         run_update(topic, {g: journal_groups[g] for g in sel_groups}, years)
     if st.button("인용 수 갱신", use_container_width=True, help="저장된 모든 논문의 인용 수·OA 링크를 OpenAlex에서 다시 받음"):
         refresh_citations()
+    if load_settings().anthropic_api_key:
+        if st.button("Claude 판정·요약", use_container_width=True,
+                     help="아직 판정하지 않은 논문의 관련성(오탐 여부)과 한 줄 요약을 Claude로 생성"):
+            with st.status("Claude 판정 중…", expanded=True) as jstatus:
+                run_judge(topic)
+                jstatus.update(label="Claude 판정 완료", state="complete")
+    else:
+        st.caption("Claude API 키 없음: 오탐 판정·요약·용어 제안이 꺼져 있습니다 (`.env`의 ANTHROPIC_API_KEY).")
     if not load_settings().openalex_api_key:
         st.caption("OpenAlex API 키 없음: 검색이 몰리면 보완 검색이 실패할 수 있습니다 (`.env`의 OPENALEX_API_KEY).")
     st.caption(f"DB: `{DB_PATH.relative_to(DB_PATH.parent.parent)}`")
@@ -177,19 +210,50 @@ with st.sidebar:
 
 st.title(topic_name)
 
+def pending_terms(name: str) -> dict:
+    """Claude suggestions the user accepted but has not saved yet (shown as extra options)."""
+    return st.session_state.setdefault(f"pending_{name}", {"facets": {}, "exact": [], "exclude": []})
+
+
+def term_select(label: str, base: list[str], extra: list[str], key: str) -> list[str]:
+    st.session_state.setdefault(key, list(base))
+    options = list(dict.fromkeys(base + extra + st.session_state[key]))
+    return st.multiselect(label, options, accept_new_options=True, key=key)
+
+
+def apply_suggestion(name: str) -> None:
+    sug = st.session_state.pop(f"sug_{name}", None)
+    if sug is None:
+        return
+    pend = pending_terms(name)
+
+    def add(key: str, picked: list[str], bucket: list[str]) -> None:
+        cur = list(st.session_state.get(key, []))
+        new = [t for t in picked if t not in cur]
+        st.session_state[key] = cur + new
+        bucket.extend(t for t in new if t not in bucket)
+
+    for facet in sug.facets:
+        picked = st.session_state.pop(f"sugpick_{name}_{facet}", None) or []
+        if picked:
+            add(f"facet_{name}_{facet}", picked, pend["facets"].setdefault(facet, []))
+    add(f"exact_{name}", st.session_state.pop(f"sugpick_{name}__exact", None) or [], pend["exact"])
+    add(f"exclude_{name}", st.session_state.pop(f"sugpick_{name}__exclude", None) or [], pend["exclude"])
+
+
 with st.expander("검색 키워드 (facet 안은 OR, facet끼리는 AND)", expanded=False):
     st.caption("체크를 빼거나 새 용어를 입력해 추가한 뒤 저장하세요. 저장 후 '업데이트 실행'을 누르면 새 검색식으로 다시 수집합니다.")
+    pend = pending_terms(topic_name)
     new_facets: dict[str, list[str]] = {}
-    for facet, terms in topic.facets.items():
-        new_facets[facet] = st.multiselect(facet, terms, default=terms, accept_new_options=True,
-                                           key=f"facet_{topic_name}_{facet}")
+    for facet in list(topic.facets) + [f for f in pend["facets"] if f not in topic.facets]:
+        new_facets[facet] = term_select(facet, topic.facets.get(facet, []), pend["facets"].get(facet, []),
+                                        key=f"facet_{topic_name}_{facet}")
     c1, c2 = st.columns(2)
     add_facet_name = c1.text_input("새 facet 이름", key=f"newfacet_name_{topic_name}")
     add_facet_terms = c2.text_input("새 facet 용어 (쉼표로 구분)", key=f"newfacet_terms_{topic_name}")
-    exact = st.multiselect("정확한 문구 (단독으로도 매칭)", topic.exact_phrases, default=topic.exact_phrases,
-                           accept_new_options=True, key=f"exact_{topic_name}")
-    exclude = st.multiselect("제외 문구 (수집 후 제목·초록에서 걸러냄)", topic.exclude_phrases,
-                             default=topic.exclude_phrases, accept_new_options=True, key=f"exclude_{topic_name}")
+    exact = term_select("정확한 문구 (단독으로도 매칭)", topic.exact_phrases, pend["exact"], key=f"exact_{topic_name}")
+    exclude = term_select("제외 문구 (수집 후 제목·초록에서 걸러냄)", topic.exclude_phrases, pend["exclude"],
+                          key=f"exclude_{topic_name}")
 
     if add_facet_name.strip() and split_lines(add_facet_terms):
         new_facets[add_facet_name.strip()] = split_lines(add_facet_terms)
@@ -206,8 +270,44 @@ with st.expander("검색 키워드 (facet 안은 OR, facet끼리는 AND)", expan
         except ValueError as e:
             st.error(str(e))
         else:
+            st.session_state.pop(f"pending_{topic_name}", None)
             st.success("저장했습니다. '업데이트 실행'으로 다시 수집하세요.")
             st.rerun()
+
+    st.divider()
+    st.markdown("**Claude 용어 제안**")
+    if claude_client() is None:
+        st.caption("`.env`에 ANTHROPIC_API_KEY를 넣으면 Claude가 동의어·약어·MeSH 용어·제외 문구를 제안합니다.")
+    else:
+        desc = st.text_area("주제 설명 (선택, 한국어 가능)", key=f"desc_{topic_name}", height=68,
+                            placeholder="예: 몸 안에서 녹아 없어지는 무선 신경 자극기와 센서")
+        if st.button("용어 제안 받기", key=f"suggest_{topic_name}"):
+            with st.spinner("Claude가 용어를 고르는 중…"):
+                try:
+                    st.session_state[f"sug_{topic_name}"] = suggest_terms(claude_client(), desc, edited)
+                except (LLMError, ValueError) as e:
+                    st.error(str(e))
+        sug = st.session_state.get(f"sug_{topic_name}")
+        if sug is not None:
+            if sug.notes:
+                st.info(sug.notes)
+            st.caption("넣을 용어만 선택된 채로 두고 '선택한 용어 반영'을 누르세요. 반영 후 '키워드 저장'을 눌러야 저장됩니다.")
+            for facet, terms in sug.facets.items():
+                tag = "" if facet in new_facets else " (새 facet)"
+                st.pills(f"{facet}{tag}", terms, selection_mode="multi", default=terms,
+                         key=f"sugpick_{topic_name}_{facet}")
+            if sug.exact_phrases:
+                st.pills("정확한 문구", sug.exact_phrases, selection_mode="multi", default=sug.exact_phrases,
+                         key=f"sugpick_{topic_name}__exact")
+            if sug.exclude_phrases:
+                st.pills("제외 문구", sug.exclude_phrases, selection_mode="multi", default=sug.exclude_phrases,
+                         key=f"sugpick_{topic_name}__exclude")
+            b1, b2 = st.columns([1, 1])
+            b1.button("선택한 용어 반영", type="primary", on_click=apply_suggestion, args=(topic_name,),
+                      key=f"apply_{topic_name}")
+            if b2.button("제안 닫기", key=f"dismiss_{topic_name}"):
+                st.session_state.pop(f"sug_{topic_name}", None)
+                st.rerun()
 
 
 # ------------------------------------------------------------------ data + filters
@@ -223,6 +323,9 @@ min_rel = f2.number_input("최소 관련도", min_value=0.0, max_value=float(df_
                           value=0.0, step=1.0)
 status_pick = f3.multiselect("읽음 상태", list(STATUS_LABELS.values()), placeholder="전체")
 new_only = f4.toggle("신규만", help="최근 7일 안에 처음 수집된 논문")
+n_rejected = int(rejected_mask(df_all).sum())
+show_rejected = (st.toggle(f"Claude가 관련 없다고 판정한 논문도 보기 ({n_rejected}건)", value=False)
+                 if n_rejected else False)
 
 filters = Filters(
     groups=sel_groups + ["기타"] if sel_groups else [],
@@ -231,6 +334,7 @@ filters = Filters(
     text=text,
     statuses=[LABEL_TO_STATUS[s] for s in status_pick] or None,
     new_only=new_only,
+    hide_rejected=not show_rejected,
 )
 df = apply_filters(df_all, filters)
 
@@ -304,6 +408,10 @@ if view == "카드":
             st.markdown(" · ".join(links) + f" · 관련도 **{r['relevance']:.0f}**{cites}")
             if r["source"] == "openalex":
                 st.caption("PubMed 검색에서 빠져 OpenAlex 보완 검색으로 수집 (관련도는 제목·초록 기준)")
+            if r["llm_relevant"] is False:
+                st.warning(f"Claude 판정: 주제와 관련 없음 — {r['llm_reason']}")
+            if r["summary"]:
+                st.markdown(f"**요약:** {r['summary']}")
             st.write(r["abstract"] or "_초록 없음 (출판사가 OpenAlex에 초록을 제공하지 않음)_")
             terms = [t for ts in r["matched_terms"].values() for t in ts]
             if terms:
@@ -320,7 +428,9 @@ else:
     table = pd.DataFrame({
         "id": df["id"],
         "신규": df["is_new"].map(lambda x: "NEW" if x else ""),
-        "제목": [display_title(t, rv) for t, rv in zip(df["title"], df["is_review"])],
+        "제목": [("✕ " if lr is False else "") + display_title(t, rv)
+               for t, rv, lr in zip(df["title"], df["is_review"], df["llm_relevant"])],
+        "요약": df["summary"],
         "링크": df.apply(lambda r: f"https://doi.org/{r['doi']}" if r["doi"]
                        else f"https://pubmed.ncbi.nlm.nih.gov/{r['pmid']}/" if r["pmid"]
                        else f"https://openalex.org/{r['openalex_id']}", axis=1),
@@ -334,15 +444,18 @@ else:
     }).set_index("id")
     if table["인용"].isna().all():  # not enriched yet
         table = table.drop(columns=["인용"])
+    if not (table["요약"] != "").any():  # Claude not run yet
+        table = table.drop(columns=["요약"])
     edited_table = st.data_editor(
         table,
         hide_index=True,
         use_container_width=True,
         height=min(640, 38 + 35 * len(table)),
-        disabled=["신규", "제목", "링크", "저널", "날짜", "인용", "관련도", "전문"],
+        disabled=["신규", "제목", "요약", "링크", "저널", "날짜", "인용", "관련도", "전문"],
         column_config={
             "신규": st.column_config.TextColumn(width=50),
-            "제목": st.column_config.TextColumn(width="large"),
+            "제목": st.column_config.TextColumn(width="large", help="✕ = Claude가 주제와 관련 없다고 판정"),
+            "요약": st.column_config.TextColumn(width="large", help="Claude 한 줄 요약"),
             "링크": st.column_config.LinkColumn(display_text="열기", width=60),
             "인용": st.column_config.NumberColumn(help="OpenAlex 인용 수", width=60),
             "전문": st.column_config.LinkColumn(display_text="OA", width=50, help="무료 전문 (OpenAlex)"),

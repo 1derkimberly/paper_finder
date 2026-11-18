@@ -18,7 +18,8 @@ TOP_GROUP_PREFIX = "tier1"  # journal groups counted as "상위 저널"
 
 COLUMNS = ["id", "pmid", "doi", "title", "abstract", "journal", "group", "pub_date", "pub_dt", "year",
            "authors", "mesh", "pub_types", "is_review", "cited_by", "oa_url", "source", "openalex_id",
-           "first_seen", "is_new", "relevance", "matched_terms", "status", "note"]
+           "first_seen", "is_new", "relevance", "matched_terms", "status", "note",
+           "llm_relevant", "llm_reason", "summary"]
 
 
 def journal_to_group(journal_groups: dict[str, list[str]]) -> dict[str, str]:
@@ -57,6 +58,7 @@ def load_frame(db_path: Path, topic_name: str, journal_groups: dict[str, list[st
     for r in rows:
         pub_dt = _pub_dt(r["pub_date"])
         pub_types = json.loads(r["pub_types"] or "[]")
+        verdict = json.loads(r["llm_verdict"]) if r["llm_verdict"] else {}
         records.append({
             "id": r["id"], "pmid": r["pmid"], "doi": r["doi"], "title": r["title"],
             "abstract": r["abstract"] or "",
@@ -72,10 +74,14 @@ def load_frame(db_path: Path, topic_name: str, journal_groups: dict[str, list[st
             "is_new": r["first_seen"] >= cutoff, "relevance": r["relevance"] or 0.0,
             "matched_terms": json.loads(r["matched_terms"] or "{}"),
             "status": r["mark_status"] or "", "note": r["mark_note"] or "",
+            "llm_relevant": verdict.get("relevant"),          # None = not judged yet
+            "llm_reason": verdict.get("reason", ""), "summary": r["summary"] or "",
         })
     df = pd.DataFrame.from_records(records, columns=COLUMNS)
     df["year"] = df["year"].astype("Int64")
     df["cited_by"] = df["cited_by"].astype("Int64")
+    # keep Python True/False/None (pandas would turn an all-judged column into numpy bools)
+    df["llm_relevant"] = pd.Series([r["llm_relevant"] for r in records], index=df.index, dtype=object)
     return df
 
 
@@ -112,6 +118,11 @@ class Filters:
     text: str = ""
     statuses: list[str] | None = None     # "" means unmarked; None = all
     new_only: bool = False
+    hide_rejected: bool = False           # hide papers Claude judged off-topic
+
+
+def rejected_mask(df: pd.DataFrame) -> pd.Series:
+    return df["llm_relevant"].map(lambda v: v is not None and v == False).astype(bool)  # noqa: E712
 
 
 def apply_filters(df: pd.DataFrame, f: Filters) -> pd.DataFrame:
@@ -125,11 +136,14 @@ def apply_filters(df: pd.DataFrame, f: Filters) -> pd.DataFrame:
     if f.text.strip():
         needle = f.text.strip()
         m &= (df["title"].str.contains(needle, case=False, regex=False)
-              | df["abstract"].str.contains(needle, case=False, regex=False))
+              | df["abstract"].str.contains(needle, case=False, regex=False)
+              | df["summary"].str.contains(needle, case=False, regex=False))
     if f.statuses is not None:
         m &= df["status"].isin(f.statuses)
     if f.new_only:
         m &= df["is_new"]
+    if f.hide_rejected:
+        m &= ~rejected_mask(df)
     return df[m]
 
 

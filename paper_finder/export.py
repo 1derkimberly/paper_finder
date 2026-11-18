@@ -11,13 +11,15 @@ CSV_COLUMNS = {
     "title": "title", "authors": "authors", "journal": "journal", "pub_date": "pub_date",
     "doi": "doi", "pmid": "pmid", "relevance": "relevance", "cited_by": "cited_by",
     "oa_url": "oa_url", "source": "source", "status": "status", "note": "note",
-    "first_seen": "first_seen", "abstract": "abstract",
+    "first_seen": "first_seen", "summary": "summary_ko", "llm_relevant": "llm_relevant",
+    "llm_reason": "llm_reason", "abstract": "abstract",
 }
 
 
 def to_csv(df: pd.DataFrame) -> bytes:
-    out = df[list(CSV_COLUMNS)].copy()
+    out = df[list(CSV_COLUMNS)].rename(columns=CSV_COLUMNS)
     out["authors"] = out["authors"].map(lambda a: "; ".join(a))
+    out["llm_relevant"] = out["llm_relevant"].map({True: "yes", False: "no"}).fillna("")
     out.insert(1, "article_type", df["is_review"].map(lambda r: "review" if r else "article"))
     # utf-8-sig so Excel opens Korean/accents correctly
     return out.to_csv(index=False).encode("utf-8-sig")

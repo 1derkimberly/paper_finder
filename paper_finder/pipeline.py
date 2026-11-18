@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
 from paper_finder import db
 from paper_finder.config import OpenAlexSource, Topic
+from paper_finder.llm import ClaudeClient, LLMError, PaperText, judge_papers
 from paper_finder.openalex import OpenAlexClient, OpenAlexError, enrichment_from, work_to_paper
 from paper_finder.process import Scored, matches_topic, process, title_has_any_term
 from paper_finder.pubmed import Paper, PubMedClient
@@ -140,6 +142,48 @@ def run(client: PubMedClient, topic: Topic, journal_groups: dict[str, list[str]]
         finally:
             conn.close()
     return res
+
+
+@dataclass
+class JudgeStats:
+    pending: int = 0                 # papers that needed a verdict
+    judged: int = 0
+    rejected: int = 0
+    error: str | None = None         # first LLM error; judging stops there (saved batches are kept)
+
+
+def judge_topic(llm: ClaudeClient, topic: Topic, db_path: Path, force: bool = False, batch_size: int = 10,
+                progress: Callable[[int, int], None] | None = None) -> JudgeStats:
+    """Claude relevance verdict + one-line summary for the topic's papers that have none yet.
+    Rejected papers stay in the DB (the dashboard hides them by default)."""
+    stats = JudgeStats()
+    if not db_path.exists():
+        return stats
+    conn = db.connect(db_path)
+    try:
+        rows = db.papers_to_judge(conn, topic.name, force)
+        stats.pending = len(rows)
+        for i in range(0, len(rows), batch_size):
+            batch = rows[i:i + batch_size]
+            try:
+                verdicts = judge_papers(llm, topic, [
+                    PaperText(str(r["id"]), r["title"], r["abstract"] or "", r["journal"] or "") for r in batch])
+            except LLMError as e:
+                stats.error = str(e)
+                break
+            with conn:
+                for r in batch:
+                    v = verdicts.get(str(r["id"]))
+                    if v is None:  # left out of the reply; retried next time
+                        continue
+                    db.set_verdict(conn, r["topic_id"], r["id"], v.relevant, v.reason, v.summary, llm.model)
+                    stats.judged += 1
+                    stats.rejected += not v.relevant
+            if progress:
+                progress(min(i + batch_size, len(rows)), len(rows))
+    finally:
+        conn.close()
+    return stats
 
 
 def enrich_db(oa: OpenAlexClient, db_path: Path) -> EnrichStats:

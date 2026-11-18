@@ -4,3 +4,4 @@ python-dotenv>=1.0
 pytest>=8.0
 streamlit>=1.50
 pandas>=2.2
+anthropic>=2.10

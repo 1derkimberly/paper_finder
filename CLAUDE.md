@@ -14,7 +14,11 @@
 - Phase 3 (보강): 구현됨 — OpenAlex로 인용 수·무료 전문 링크(DOI 매칭), PubMed 수록이 부분적인 저널 보완 검색
   - 검증(2026-11-18): DOI 매칭 174/174 (100%, 목표 90%). 보완 검색으로 npj Flex Electron·Nat Electron 논문 11건 추가
   - OpenAlex는 키 없이 쓰면 IP당 하루 $0.10 공유 한도 + 검색 부하 시 429(30초 대기). 보완 검색이 실패해도 PubMed 결과는 저장되고 경고만 표시
-- Phase 4~5: 미구현 (Claude API, 자동 업데이트)
+- Phase 4 (LLM): 구현됨 — Claude API로 용어 제안(`expand`·대시보드 키워드 패널), 관련성 판정(오탐) + 한국어 한 줄 요약(`judge`, 업데이트 후 자동)
+  - `ANTHROPIC_API_KEY` 가 없으면 LLM 기능만 꺼지고 나머지는 동작. 모델은 `CLAUDE_MODEL` (기본 claude-opus-5-5)
+  - 검증(2026-11-18, claude-sonnet-5-5): 174편 판정, 17편 관련 없음(토양·가스·전자코·열전 등). SPEC §10 기준 4편 모두 관련 있음
+  - 판정 기준은 "분야 전반"이다: 생분해가 아니어도 이식형·무선·연성 바이오전자는 관련 있음, 단어가 다른 뜻으로 우연히 걸린 것만 제외 (모든 facet을 요구하면 §10의 Science in-body networking 논문이 빠졌음)
+- Phase 5: 미구현 (자동 업데이트)
 
 ## 실행
 
@@ -26,7 +30,9 @@ copy .env.example .env   # NCBI_API_KEY, NCBI_EMAIL 채우기 (없어도 동작,
 .\.venv\Scripts\python -m paper_finder search transient_bioelectronics --groups tier1_general tier1_bme --dry-run
 .\.venv\Scripts\python -m paper_finder list transient_bioelectronics             # 저장된 결과 보기
 .\.venv\Scripts\python -m paper_finder enrich                                      # 저장된 모든 논문의 인용 수 갱신
-# search 옵션: --no-openalex (PubMed만), --quiet (목록 출력 생략)
+.\.venv\Scripts\python -m paper_finder judge transient_bioelectronics [--force]   # Claude 관련성 판정 + 요약 (미판정분만)
+.\.venv\Scripts\python -m paper_finder expand --topic transient_bioelectronics "설명"  # Claude 용어 제안 (YAML 출력)
+# search 옵션: --no-openalex (PubMed만), --no-llm (Claude 판정 생략), --quiet (목록 출력 생략)
 .\.venv\Scripts\python -m streamlit run app.py                                   # 대시보드 (http://localhost:8501)
 .\.venv\Scripts\python -m pytest                                                  # 오프라인 단위 테스트 + 앱 스모크 테스트
 .\.venv\Scripts\python -m pytest -m network                                       # PubMed 실제 호출 검증 (SPEC §10)
@@ -45,7 +51,8 @@ paper_finder/
   process.py   dedupe → exclude 필터 → facet 매칭 점수
   db.py        SQLite 스키마 (SPEC §7) 와 upsert
   openalex.py  OpenAlex 클라이언트 (DOI 일괄 조회, 부울 검색, Retry-After 재시도)
-  pipeline.py  search → fetch → OpenAlex 보완 → dedupe → filter → score → enrich → store
+  llm.py       Claude API (구조화 출력 JSON): suggest_terms, judge_papers (10편씩 배치)
+  pipeline.py  search → fetch → OpenAlex 보완 → dedupe → filter → score → enrich → store; judge_topic
   cli.py       argparse CLI (`python -m paper_finder`)
   dashboard_data.py  DB → DataFrame, 필터, 지표, 차트용 집계 (Streamlit 비의존, 테스트 대상)
   export.py    CSV (utf-8-sig, Excel 호환) / BibTeX
@@ -70,6 +77,10 @@ tests/                 pytest (network 마커는 실제 API 호출)
 - OpenAlex 검색은 어간 처리를 하므로 결과를 `process.matches_topic` 으로 다시 확인한다. 초록이 없는 레코드(Springer Nature 등은 OpenAlex에 초록 미제공)는 제목에 주제 용어가 하나라도 있으면 통과.
 - 리뷰 판별은 PubMed PublicationType 기준 (`Review`, `* Review`, `Meta-Analysis`) → 제목 앞 `(review)`. 새 컬럼은 `db._ADDED_COLUMNS` 에 추가하면 기존 DB에 자동 반영.
 - 대시보드에서 키워드를 저장하면 `topics.yaml` 이 다시 쓰여 머리말 외 주석은 사라진다.
+- Claude 판정은 삭제가 아니라 표시다: `topic_papers.llm_verdict` (JSON: relevant·reason·model·date), 요약은 `papers.summary`. 대시보드는 관련 없음 판정을 기본으로 숨기고 토글로 보여준다.
+- 판정은 `llm_verdict IS NULL` 인 링크만 한다 (재검색해도 `link()` 가 판정을 보존). 키워드가 바뀌면 링크가 지워지므로 다시 판정된다.
+- Claude 용어 제안은 바로 저장하지 않고 키워드 편집기에 넣기만 한다 (사용자가 '키워드 저장'으로 확정).
+- Claude 호출은 `client.beta.messages.create` + `output_config.format` (JSON 스키마) + 서버 측 fallback(`fallbacks="default"`). 오류는 `LLMError` 로 바꾸고, 판정 중 오류가 나면 거기서 멈추되 저장된 배치는 유지.
 
 ## 작업 규칙
 

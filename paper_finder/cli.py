@@ -8,11 +8,14 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import yaml
+
 from paper_finder import db
 from paper_finder.config import (CONFIG_DIR, DEFAULT_DB, load_journals, load_openalex_sources, load_settings,
                                  load_topics)
+from paper_finder.llm import ClaudeClient, LLMError, suggest_terms
 from paper_finder.openalex import OpenAlexClient, OpenAlexError
-from paper_finder.pipeline import enrich_db, run
+from paper_finder.pipeline import JudgeStats, enrich_db, judge_topic, run
 from paper_finder.dashboard_data import display_title
 from paper_finder.pubmed import PubMedClient, is_review
 from paper_finder.query import years_ago
@@ -40,10 +43,20 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-openalex", action="store_true",
                    help="skip OpenAlex supplement search and citation lookup")
     s.add_argument("--quiet", action="store_true", help="do not print the paper list")
+    s.add_argument("--no-llm", action="store_true",
+                   help="skip the Claude relevance check (it runs only when ANTHROPIC_API_KEY is set)")
 
     ls = sub.add_parser("list", help="list stored papers for a topic")
     ls.add_argument("topic")
     ls.add_argument("--limit", type=int, default=50)
+
+    j = sub.add_parser("judge", help="Claude relevance verdict + one-line Korean summary for stored papers")
+    j.add_argument("topic")
+    j.add_argument("--force", action="store_true", help="re-judge papers that already have a verdict")
+
+    e = sub.add_parser("expand", help="ask Claude for facet / exact / exclude term suggestions")
+    e.add_argument("description", nargs="?", default="", help="free-text description of the topic")
+    e.add_argument("--topic", help="existing topic to extend (its terms are sent and not repeated)")
 
     sub.add_parser("enrich", help="refresh OpenAlex citation counts / OA links for all stored papers")
     sub.add_parser("topics", help="list configured topics and journal groups")
@@ -53,6 +66,24 @@ def _build_parser() -> argparse.ArgumentParser:
 def _openalex_client() -> OpenAlexClient:
     s = load_settings()
     return OpenAlexClient(api_key=s.openalex_api_key, mailto=s.openalex_mailto)
+
+
+def _claude_client() -> ClaudeClient | None:
+    s = load_settings()
+    if not s.anthropic_api_key:
+        return None
+    return ClaudeClient(api_key=s.anthropic_api_key, model=s.claude_model)
+
+
+def _judge(llm: ClaudeClient, topic, db_path: Path, force: bool = False) -> JudgeStats:
+    def progress(done: int, total: int) -> None:
+        print(f"  Claude: {done}/{total}", end="\r", flush=True)
+
+    stats = judge_topic(llm, topic, db_path, force=force, progress=progress)
+    print(f"Claude ({llm.model}) judged {stats.judged}/{stats.pending}: {stats.rejected} off-topic" + " " * 10)
+    if stats.error:
+        print(f"WARNING: Claude judging stopped: {stats.error}")
+    return stats
 
 
 def _print_enrich(stats) -> None:
@@ -103,6 +134,12 @@ def _cmd_search(args) -> int:
         print(f"WARNING: {w}")
     for p, reason in res.excluded:
         print(f"  - excluded ({reason}): {p.title[:90]}  [{p.journal}]")
+    if not args.no_llm and res.kept:
+        llm = _claude_client()
+        if llm is None:
+            print("Claude check skipped (no ANTHROPIC_API_KEY)")
+        else:
+            _judge(llm, topics[args.topic], args.db)
     if not args.quiet:
         print()
         for i, s in enumerate(res.kept, 1):
@@ -111,6 +148,46 @@ def _cmd_search(args) -> int:
             print(f"{i:3d}. [{s.relevance:.0f}] {display_title(p.title, is_review(p.pub_types))[:100]}")
             print(f"      {p.journal}, {p.pub_date}  doi:{p.doi or '-'}  pmid:{p.pmid or '-'}{cites}")
     print(f"\nsaved to {args.db}")
+    return 0
+
+
+def _cmd_judge(args) -> int:
+    topics = load_topics(args.topics)
+    if args.topic not in topics:
+        print(f"unknown topic '{args.topic}'. available: {', '.join(topics)}", file=sys.stderr)
+        return 2
+    llm = _claude_client()
+    if llm is None:
+        print("ANTHROPIC_API_KEY is not set (.env)", file=sys.stderr)
+        return 1
+    stats = _judge(llm, topics[args.topic], args.db, force=args.force)
+    return 1 if stats.error else 0
+
+
+def _cmd_expand(args) -> int:
+    current = None
+    if args.topic:
+        topics = load_topics(args.topics)
+        if args.topic not in topics:
+            print(f"unknown topic '{args.topic}'", file=sys.stderr)
+            return 2
+        current = topics[args.topic]
+    if not args.description and current is None:
+        print("give a description or --topic", file=sys.stderr)
+        return 2
+    llm = _claude_client()
+    if llm is None:
+        print("ANTHROPIC_API_KEY is not set (.env)", file=sys.stderr)
+        return 1
+    try:
+        sug = suggest_terms(llm, args.description, current)
+    except LLMError as e:
+        print(f"Claude error: {e}", file=sys.stderr)
+        return 1
+    out = {"facets": sug.facets, "exact_phrases": sug.exact_phrases, "exclude_phrases": sug.exclude_phrases}
+    print(yaml.safe_dump(out, allow_unicode=True, sort_keys=False, width=120))
+    if sug.notes:
+        print(f"# {sug.notes}")
     return 0
 
 
@@ -142,9 +219,15 @@ def _cmd_list(args) -> int:
     week_ago = date.fromordinal(date.today().toordinal() - 7).isoformat()
     for i, r in enumerate(rows[: args.limit], 1):
         badge = " NEW" if r["first_seen"] >= week_ago else ""
+        verdict = json.loads(r["llm_verdict"]) if r["llm_verdict"] else {}
+        off = " [off-topic]" if verdict.get("relevant") is False else ""
         review = is_review(json.loads(r["pub_types"] or "[]"))
-        print(f"{i:3d}. [{r['relevance']:.0f}]{badge} {display_title(r['title'], review)[:100]}")
+        print(f"{i:3d}. [{r['relevance']:.0f}]{badge}{off} {display_title(r['title'], review)[:100]}")
         print(f"      {r['journal']}, {r['pub_date']}  doi:{r['doi'] or '-'}")
+        if r["summary"]:
+            print(f"      {r['summary']}")
+        if off:
+            print(f"      Claude: {verdict.get('reason', '')}")
     print(f"\n{len(rows)} papers total")
     return 0
 
@@ -162,5 +245,5 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     args = _build_parser().parse_args(argv)
-    return {"search": _cmd_search, "list": _cmd_list, "enrich": _cmd_enrich,
-            "topics": _cmd_topics}[args.cmd](args)
+    return {"search": _cmd_search, "list": _cmd_list, "enrich": _cmd_enrich, "judge": _cmd_judge,
+            "expand": _cmd_expand, "topics": _cmd_topics}[args.cmd](args)

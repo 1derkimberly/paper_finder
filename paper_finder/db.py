@@ -65,6 +65,7 @@ _ADDED_COLUMNS = [
     ("papers", "source", "TEXT"),          # 'pubmed' | 'openalex'
     ("papers", "openalex_id", "TEXT"),
     ("papers", "enriched_at", "TEXT"),     # last OpenAlex lookup (date)
+    ("papers", "summary", "TEXT"),         # Phase 4: Claude one-line Korean summary
 ]
 
 
@@ -163,6 +164,29 @@ def topic_papers(conn: sqlite3.Connection, topic_name: str) -> list[sqlite3.Row]
            ORDER BY tp.relevance DESC, p.pub_date DESC""",
         (topic_name,),
     ).fetchall()
+
+
+def papers_to_judge(conn: sqlite3.Connection, topic_name: str, force: bool = False) -> list[sqlite3.Row]:
+    """Linked papers without an LLM verdict for this topic (all of them with force)."""
+    return conn.execute(
+        f"""SELECT tp.topic_id, p.id, p.title, p.abstract, p.journal
+            FROM papers p
+            JOIN topic_papers tp ON tp.paper_id = p.id
+            JOIN topics t ON t.id = tp.topic_id
+            WHERE t.name = ? {'' if force else 'AND tp.llm_verdict IS NULL'}
+            ORDER BY p.id""",
+        (topic_name,),
+    ).fetchall()
+
+
+def set_verdict(conn: sqlite3.Connection, topic_id: int, paper_id: int, relevant: bool, reason: str,
+                summary: str, model: str, today: date | None = None) -> None:
+    verdict = {"relevant": relevant, "reason": reason, "model": model,
+               "date": (today or date.today()).isoformat()}
+    conn.execute("UPDATE topic_papers SET llm_verdict = ? WHERE topic_id = ? AND paper_id = ?",
+                 (json.dumps(verdict, ensure_ascii=False), topic_id, paper_id))
+    if summary:
+        conn.execute("UPDATE papers SET summary = ? WHERE id = ?", (summary, paper_id))
 
 
 MARK_STATUSES = ("to-read", "read", "starred")

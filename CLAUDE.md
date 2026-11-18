@@ -110,7 +110,9 @@ tests/                 pytest (network 마커는 실제 API 호출)
   - 테스트: `PAPER_FINDER_FAKE_LOGIN`(""=방문자, 이메일=로그인)으로 역할 시뮬레이션. Postgres 테스트는 `TEST_DATABASE_URL` 이 있을 때만
 - 테스트는 `tests/fixtures/topics.yaml` 을 쓴다 (conftest가 매 테스트 임시 config 폴더로 `CONFIG_DIR` 교체). 사용자의 `config/topics.yaml` 은 대시보드에서 바뀌므로 테스트가 기대면 안 된다
 - 주제 선택은 selectbox가 아니라 사이드바 popover 안의 버튼 줄(주제 | 휴지통 아이콘, 키 `pick_<ID>`·`delicon_<ID>`). 테스트는 `tests/app_helpers.py` 의 `menu`·`go` 사용
-- 오른쪽 위 '내 페이지'(MY_PAGE): 역할·한도와 내 주제별 신규 논문 리포트 다운로드 (사이드바에는 리포트 버튼 없음)
+- 오른쪽 위 계정 아이콘(popover): My page·로그아웃(바로 `st.logout`)·방문자는 로그인. My page(MY_PAGE) = 탭 [신규 논문 리포트 | 계정·개인정보]. 사이드바에는 리포트·로그아웃 없음 (방문자 로그인 버튼만)
+- 마지막 업데이트 정보는 주제 제목 줄 오른쪽. 저널 그룹은 `select_slider` 범위(종합 → 전문, journals.yaml 순서 = 일반→전문, 표시 이름 `GROUP_LABELS`)
+- 미리보기 dashboard-demo는 `DATABASE_URL=""` 로 SQLite 데모 DB만 쓴다 (`.env` 의 Supabase에 붙지 않게)
 - 주제 삭제(휴지통 아이콘 또는 관리 화면 → `st.dialog` 확인창의 '삭제'. 대기 중인 삭제는 `session_state["ask_delete"]`, 취소·삭제·닫기에서 지움): `topics.yaml` 항목·`topics`·`topic_papers`·`runs` 삭제. 어느 주제에도 안 속하게 된 논문은 지우되 `user_marks` 가 있는 논문은 남긴다. 리포트 파일은 둔다
 - Claude 용어 제안은 바로 저장하지 않고 키워드 편집기에 넣기만 한다 (사용자가 '키워드 저장'으로 확정).
 - Claude 호출은 `client.beta.messages.create` + `output_config.format` (JSON 스키마) + 서버 측 fallback(`fallbacks="default"`). 오류는 `LLMError` 로 바꾸고, 판정 중 오류가 나면 거기서 멈추되 저장된 배치는 유지.

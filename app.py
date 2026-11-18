@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import os
 import uuid
 from datetime import date
@@ -339,6 +340,35 @@ def topic_label(name: str) -> str:
 def owned_count() -> int:
     return sum(1 for i in INFOS.values() if i.owner == USER_KEY) if ROLE.max_topics(LIMITS) is not None else 0
 
+st.html("""<style>
+/* topic menu: compact rows sized to their content */
+.st-key-topicmenu, .st-key-topicmenu [data-testid="stVerticalBlock"],
+.st-key-topicmenu [data-testid="stHorizontalBlock"] { gap: 0 !important; }
+.st-key-topicmenu button { min-height: 2rem; padding-top: .2rem; padding-bottom: .2rem; justify-content: flex-start; }
+.st-key-topicmenu hr { margin: .35rem 0; }
+.st-key-topicmenu button > div, .st-key-accountmenu button > div { justify-content: flex-start; width: 100%; }
+[data-testid="stPopoverBody"]:has(.st-key-topicmenu) { min-width: 280px; }
+.st-key-topicmenu [data-testid="stElementContainer"] { margin: 0; }
+/* account menu: icon at the right edge */
+.st-key-accountbar { align-items: flex-end; }
+.st-key-accountmenu button { min-height: 2rem; justify-content: flex-start; }
+</style>""")
+
+
+# journals.yaml lists groups from general to specific; the slider picks a contiguous span of them.
+GROUP_LABELS = {"tier1_general": "종합", "tier1_bme": "BME 상위", "materials_devices": "소재·소자"}
+
+
+def journal_range(groups: list[str]) -> list[str]:
+    if len(groups) <= 1:
+        return groups
+    lo, hi = st.select_slider("저널 범위 (종합 → 전문)", options=groups, value=(groups[0], groups[-1]),
+                              format_func=lambda g: GROUP_LABELS.get(g, g), key="journal_span",
+                              help=" · ".join(f"{GROUP_LABELS.get(g, g)}: {', '.join(journal_groups[g][:3])} 등"
+                                              for g in groups))
+    return groups[groups.index(lo): groups.index(hi) + 1]
+
+
 def _go(name: str) -> None:
     st.session_state["selected_topic"] = name
 
@@ -381,7 +411,8 @@ with st.sidebar:
     st.caption("상위 저널 최신 논문 대시보드")
     # A dropdown of rows (topic | delete icon): a selectbox cannot hold a button per option.
     st.caption("주제")
-    with st.popover(topic_label(topic_name), width="stretch", icon=":material/expand_more:"):
+    with st.popover(topic_label(topic_name), width="stretch", icon=":material/expand_more:"), \
+            st.container(key="topicmenu"):
         for n in topics:
             c1, c2 = st.columns([6, 1], vertical_alignment="center")
             c1.button(topic_label(n), key=f"pick_{n}", on_click=_go, args=(n,), width="stretch",
@@ -425,17 +456,13 @@ def create_topic(t: Topic) -> None:
 
 
 def sidebar_footer() -> None:
-    """Login / logout, DB label and privacy link: shown on every screen (also with no topics yet)."""
-    if AUTH:
+    """Login button for visitors (account / logout live in the top-right menu) and the DB label for the admin."""
+    if AUTH and not EMAIL:
         st.divider()
-        if EMAIL:
-            st.caption(f":material/account_circle: {EMAIL}" + (" · 관리자" if IS_ADMIN else ""))
-            st.button("로그아웃", on_click=st.logout, width="stretch", icon=":material/logout:")
-        else:
-            st.caption("구글 계정으로 로그인하면 내 주제를 계속 쓰고 읽음 표시와 메모를 저장할 수 있습니다.")
-            st.button("구글로 로그인", on_click=st.login, type="primary", width="stretch", icon=":material/login:")
-    st.caption(f"DB: `{db.describe(DB_PATH)}`")
-    st.page_link("pages/privacy.py", label="개인정보처리방침", icon=":material/policy:")
+        st.caption("구글 계정으로 로그인하면 내 주제를 계속 쓰고 읽음 표시와 메모를 저장할 수 있습니다.")
+        st.button("구글로 로그인", on_click=st.login, type="primary", width="stretch", icon=":material/login:")
+    if IS_ADMIN:
+        st.caption(f"DB: `{db.describe(DB_PATH)}`")
 
 
 def new_topic_page() -> None:
@@ -672,44 +699,87 @@ def admin_page() -> None:
                 bump_data_version()
 
 
+def _my_marks() -> tuple[int, int]:
+    """(reading marks, notes) this user has stored."""
+    if not db.exists(DB_PATH):
+        return 0, 0
+    rows = _query("SELECT COUNT(status) AS s, COUNT(note) AS n FROM user_marks WHERE user_id = ? "
+                  "AND (status IS NOT NULL OR (note IS NOT NULL AND note <> ''))", (USER_KEY,))
+    return (int(rows[0]["s"]), int(rows[0]["n"])) if rows else (0, 0)
+
+
 def my_page() -> None:
-    """Personal page (top-right button): who I am, my limits, and the new-paper report of each of my topics."""
-    st.title("내 페이지")
-    if AUTH:
-        st.caption(f"{ROLE.label}" + (f" · {EMAIL}" if EMAIL else ""))
-    limit = ROLE.max_topics(LIMITS)
-    st.caption(f"내 주제 {len(topics)}개" + (f" / 최대 {limit}개" if limit is not None else "")
-               + f" · 검색 기간 최대 {ROLE.max_years(LIMITS)}년")
-    st.subheader("신규 논문 리포트")
-    if not topics:
-        st.info("아직 주제가 없습니다. 사이드바 주제 메뉴의 '새 주제 만들기'로 시작하세요.")
-        return
-    st.caption("각 주제를 마지막으로 업데이트했을 때 새로 수집된 논문을 정리한 HTML 리포트입니다.")
-    for n in topics:
-        with st.container(border=True):
-            c1, c2 = st.columns([3, 2], vertical_alignment="center")
-            c1.markdown(f"**{topic_label(n)}**")
-            last = last_update(n, data_version())
-            c1.caption(f":material/schedule: {last}" if last else ":material/schedule: 아직 업데이트하지 않음")
-            report = cached_report(n, data_version(), topic_label(n))
-            if report is None:
-                c2.caption("업데이트를 한 번 실행하면 리포트가 생깁니다.")
-            else:
-                fname, html_bytes = report
-                c2.download_button(f"리포트 ({fname[:10]})", html_bytes, file_name=fname, mime="text/html",
-                                   width="stretch", icon=":material/download:", key=f"report_{n}")
-
-
-# Top-right corner: the personal page (or back to the last topic when already on it).
-_, corner = st.columns([5, 1])
-if topic_name == MY_PAGE:
+    """My page (top-right account menu): new-paper reports of my topics, my account and what is stored about me."""
     back = st.session_state.get("before_my_page")
-    corner.button("돌아가기", icon=":material/arrow_back:", width="stretch", key="my_page_back",
-                  on_click=_go, args=(back if back in OPTIONS else OPTIONS[0],))
-else:
+    st.button("돌아가기", icon=":material/arrow_back:", key="my_page_back", type="tertiary",
+              on_click=_go, args=(back if back in OPTIONS else OPTIONS[0],))
+    st.title("My page")
+    tab_reports, tab_account = st.tabs([":material/description: 신규 논문 리포트", ":material/badge: 계정·개인정보"])
+
+    with tab_reports:
+        if not topics:
+            st.info("아직 주제가 없습니다. 사이드바 주제 메뉴의 '새 주제 만들기'로 시작하세요.")
+        else:
+            st.caption("각 주제를 마지막으로 업데이트했을 때 새로 수집된 논문을 정리한 HTML 리포트입니다.")
+        for n in topics:
+            with st.container(border=True):
+                c1, c2 = st.columns([3, 2], vertical_alignment="center")
+                c1.markdown(f"**{topic_label(n)}**")
+                last = last_update(n, data_version())
+                c1.caption(f":material/schedule: {last}" if last else ":material/schedule: 아직 업데이트하지 않음")
+                report = cached_report(n, data_version(), topic_label(n))
+                if report is None:
+                    c2.caption("업데이트를 한 번 실행하면 리포트가 생깁니다.")
+                else:
+                    fname, html_bytes = report
+                    c2.download_button(f"리포트 ({fname[:10]})", html_bytes, file_name=fname, mime="text/html",
+                                       width="stretch", icon=":material/download:", key=f"report_{n}")
+
+    with tab_account:
+        limit = ROLE.max_topics(LIMITS)
+        marks, notes = _my_marks()
+        st.markdown("**계정**")
+        rows = [("구분", ROLE.label if AUTH else "로컬 사용 (관리자)")]
+        if EMAIL:
+            rows.append(("이메일 (구글 로그인)", EMAIL))
+        rows += [("내 주제", f"{len(topics)}개" + (f" / 최대 {limit}개" if limit is not None else "")),
+                 ("검색 기간", f"최대 {ROLE.max_years(LIMITS)}년"),
+                 ("읽음 표시 · 메모", f"{marks}건 · {notes}건")]
+        st.dataframe(pd.DataFrame(rows, columns=["항목", "내용"]), hide_index=True, width="stretch")
+
+        st.markdown("**저장되는 정보**")
+        if ROLE.kind == "visitor":
+            st.markdown(f"- 이 브라우저 세션의 무작위 식별자로 만든 주제와 읽음 표시를 구분합니다.\n"
+                        f"- 방문자 주제와 읽음 표시는 **{LIMITS.visitor_topic_hours}시간 뒤 자동 삭제**됩니다.\n"
+                        "- 로그인하면 주제·읽음 표시·메모를 계속 보관할 수 있습니다.")
+        else:
+            st.markdown("- 구글 계정의 **이메일 주소**만 사용합니다 (이름·사진은 저장하지 않음).\n"
+                        "- 내가 만든 주제(검색 키워드), 논문별 읽음 상태와 메모.\n"
+                        "- 비용 한도를 위한 Claude 요청 기록 (시각·종류·토큰 수·내 식별자).")
+        st.markdown("- Claude(AI)에는 주제 설명과 논문 제목·초록만 보내며 이메일 등 개인 정보는 보내지 않습니다.\n"
+                    "- 주제는 사이드바 주제 메뉴의 휴지통 아이콘으로 언제든 지울 수 있습니다. "
+                    "계정 관련 정보 전체 삭제는 개인정보처리방침의 연락처로 요청해 주세요.")
+        st.page_link("pages/privacy.py", label="개인정보처리방침 전문", icon=":material/policy:")
+
+
+# Top-right corner: account icon -> floating menu (My page, logout).
+_, corner = st.columns([12, 1])
+if topic_name != MY_PAGE:
     st.session_state["before_my_page"] = topic_name
-    corner.button("내 페이지", icon=":material/account_circle:", width="stretch", key="my_page_btn",
+with corner.container(key="accountbar"):
+    with st.popover("", icon=":material/account_circle:", help="내 계정"), st.container(key="accountmenu"):
+        if EMAIL:
+            st.caption(EMAIL + (" · 관리자" if IS_ADMIN else ""))
+        elif AUTH:
+            st.caption("방문자 (로그인 안 함)")
+        st.button("My page", icon=":material/person:", key="my_page_btn", width="stretch", type="tertiary",
                   on_click=_go, args=(MY_PAGE,))
+        if EMAIL:
+            st.button("로그아웃", icon=":material/logout:", key="logout_btn", width="stretch", type="tertiary",
+                      on_click=st.logout)
+        elif AUTH:
+            st.button("구글로 로그인", icon=":material/login:", key="login_btn", width="stretch", type="tertiary",
+                      on_click=st.login)
 
 if pending_delete := st.session_state.get("ask_delete"):
     confirm_delete(pending_delete)
@@ -729,7 +799,7 @@ with st.sidebar:
 
     if CAN_MANAGE:
         st.markdown("**수집 조건**")
-        sel_groups = st.multiselect("저널 그룹", list(journal_groups), default=list(journal_groups))
+        sel_groups = journal_range(list(journal_groups))
         if MAX_YEARS > 1:
             years = st.slider("기간 (최근 N년)", 1, MAX_YEARS, min(5, MAX_YEARS))
         else:
@@ -744,9 +814,6 @@ with st.sidebar:
     else:
         sel_groups, years = list(journal_groups), min(5, MAX_YEARS)
 
-    st.divider()
-    last = last_update(topic_name, data_version())
-    st.caption(f":material/schedule: 마지막 업데이트  \n{last}" if last else ":material/schedule: 아직 업데이트하지 않음")
     if IS_ADMIN and not load_settings().anthropic_api_key:
         st.caption(":material/warning: Claude API 키 없음: 오탐 판정·요약·용어 제안이 꺼져 있습니다 "
                    "(`.env`의 ANTHROPIC_API_KEY).")
@@ -765,10 +832,17 @@ def pretty_name(name: str) -> str:
 
 
 SHOWN_NAME = topic_label(topic_name)   # stored IDs of non-admin topics carry an owner hash; never show it
-st.title(pretty_name(SHOWN_NAME))
+_t_left, _t_right = st.columns([3, 2], vertical_alignment="bottom")
+_t_left.title(pretty_name(SHOWN_NAME))
+_last = last_update(topic_name, data_version())
+_t_right.markdown(
+    "<div style='text-align:right;font-size:.85rem;opacity:.7;padding-bottom:1.1rem'>"
+    + (f"마지막 업데이트<br><span style='white-space:nowrap'>{html.escape(_last.replace(' — ', ' · '))}</span>"
+       if _last else "아직 업데이트하지 않음") + "</div>",
+    unsafe_allow_html=True)
 st.caption(f"`{SHOWN_NAME}` · 개념 그룹 {len(topic.facets)}개"
            + (f" · 정확한 문구 {len(topic.exact_phrases)}개" if topic.exact_phrases else "")
-           + f" · 최근 {years}년 · 저널 그룹 {len(sel_groups)}개")
+           + f" · 최근 {years}년 · 저널 " + " → ".join(GROUP_LABELS.get(g, g) for g in sel_groups))
 
 def pending_terms(name: str) -> dict:
     """Claude suggestions the user accepted but has not saved yet (shown as extra options)."""
@@ -870,7 +944,7 @@ def keyword_editor() -> None:
             st.code(build_query(edited, journal_groups[sel_groups[0]], years_ago(date.today(), years), date.today())
                     if (edited.facets or edited.exact_phrases) else "(키워드 없음)",
                     language="text", wrap_lines=True)
-            st.caption(f"위 검색식은 '{sel_groups[0]}' 그룹 예시입니다. 저널 그룹마다 따로 검색해 합칩니다.")
+            st.caption(f"위 검색식은 '{GROUP_LABELS.get(sel_groups[0], sel_groups[0])}' 그룹 예시입니다. 저널 그룹마다 따로 검색해 합칩니다.")
         if st.button("키워드 저장", disabled=edited.to_dict() == topic.to_dict()):
             try:
                 STORE.save(edited)

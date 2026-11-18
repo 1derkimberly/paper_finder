@@ -265,7 +265,8 @@ def test_app_my_page_has_reports(tmp_path, monkeypatch):
     assert not any((b.label or "").startswith("신규 논문 리포트") for b in at.sidebar.button)
     at.button(key="my_page_btn").click().run()
     assert not at.exception, [e.value for e in at.exception]
-    assert at.title[0].value == "내 페이지"
+    assert at.title[0].value == "My page"
+    assert any("저장되는 정보" in m.value for m in at.markdown)              # personal-info tab
     assert any("업데이트를 한 번 실행하면" in c.value for c in at.caption)   # no run yet -> no report
     at.button(key="my_page_back").click().run()
     assert at.session_state["selected_topic"] == first

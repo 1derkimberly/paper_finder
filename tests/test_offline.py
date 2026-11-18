@@ -78,7 +78,7 @@ def test_parse_pubmed_xml():
     assert p1.title.startswith("Soft biodegradable implants")
     assert p1.doi == "10.1038/s41586-025-09874-3"
     assert p1.pub_date == "2026-01-07"  # ArticleDate preferred
-    assert p1.authors == ["Kim A", "Consortium X"]
+    assert p1.authors == ["Kim, A", "Consortium X"]
     assert p1.abstract.startswith("BACKGROUND: Wireless")
     assert p1.mesh == ["Absorbable Implants"]
     assert p2.pub_date == "2025-11"

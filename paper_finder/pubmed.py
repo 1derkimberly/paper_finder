@@ -129,7 +129,8 @@ def _parse_article(node: ET.Element) -> Paper | None:
     authors = []
     for a in art.findall("AuthorList/Author"):
         last, fore = _text(a.find("LastName")), _text(a.find("ForeName"))
-        name = f"{last} {fore}".strip() or _text(a.find("CollectiveName"))
+        # "Last, Fore" keeps the family name unambiguous for BibTeX.
+        name = (f"{last}, {fore}" if last and fore else last) or _text(a.find("CollectiveName"))
         if name:
             authors.append(name)
 

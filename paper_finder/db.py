@@ -58,13 +58,19 @@ def connect(path: Path) -> sqlite3.Connection:
 
 
 def upsert_topic(conn: sqlite3.Connection, topic: Topic) -> int:
+    """Insert or update a topic. If its keywords changed, drop old paper links
+    (they were matched by the old query); user_marks are per paper and survive."""
     now = datetime.now().isoformat(timespec="seconds")
-    conn.execute(
-        "INSERT INTO topics (name, facets_json, created_at) VALUES (?, ?, ?) "
-        "ON CONFLICT(name) DO UPDATE SET facets_json = excluded.facets_json",
-        (topic.name, json.dumps(topic.to_dict(), ensure_ascii=False), now),
-    )
-    return conn.execute("SELECT id FROM topics WHERE name = ?", (topic.name,)).fetchone()["id"]
+    facets_json = json.dumps(topic.to_dict(), ensure_ascii=False, sort_keys=True)
+    row = conn.execute("SELECT id, facets_json FROM topics WHERE name = ?", (topic.name,)).fetchone()
+    if row is None:
+        cur = conn.execute("INSERT INTO topics (name, facets_json, created_at) VALUES (?, ?, ?)",
+                           (topic.name, facets_json, now))
+        return cur.lastrowid
+    if json.loads(row["facets_json"]) != json.loads(facets_json):
+        conn.execute("DELETE FROM topic_papers WHERE topic_id = ?", (row["id"],))
+        conn.execute("UPDATE topics SET facets_json = ? WHERE id = ?", (facets_json, row["id"]))
+    return row["id"]
 
 
 def upsert_paper(conn: sqlite3.Connection, s: Scored, today: date | None = None) -> tuple[int, bool]:
@@ -106,11 +112,32 @@ def link(conn: sqlite3.Connection, topic_id: int, paper_id: int, s: Scored) -> N
 
 def topic_papers(conn: sqlite3.Connection, topic_name: str) -> list[sqlite3.Row]:
     return conn.execute(
-        """SELECT p.*, tp.relevance, tp.matched_terms, tp.llm_verdict
+        """SELECT p.*, tp.relevance, tp.matched_terms, tp.llm_verdict,
+                  um.status AS mark_status, um.note AS mark_note
            FROM papers p
            JOIN topic_papers tp ON tp.paper_id = p.id
            JOIN topics t ON t.id = tp.topic_id
+           LEFT JOIN user_marks um ON um.paper_id = p.id
            WHERE t.name = ?
            ORDER BY tp.relevance DESC, p.pub_date DESC""",
         (topic_name,),
     ).fetchall()
+
+
+MARK_STATUSES = ("to-read", "read", "starred")
+
+
+def set_mark(conn: sqlite3.Connection, paper_id: int, status: str | None, note: str | None) -> None:
+    """Set a paper's reading status/note. Both empty removes the mark."""
+    status = status or None
+    note = (note or "").strip() or None
+    if status is not None and status not in MARK_STATUSES:
+        raise ValueError(f"invalid status {status!r}")
+    if status is None and note is None:
+        conn.execute("DELETE FROM user_marks WHERE paper_id = ?", (paper_id,))
+        return
+    conn.execute(
+        "INSERT INTO user_marks (paper_id, status, note) VALUES (?, ?, ?) "
+        "ON CONFLICT(paper_id) DO UPDATE SET status = excluded.status, note = excluded.note",
+        (paper_id, status, note),
+    )

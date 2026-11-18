@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -57,6 +58,27 @@ def load_topics(path: Path = CONFIG_DIR / "topics.yaml") -> dict[str, Topic]:
             exclude_phrases=[str(p) for p in body.get("exclude_phrases") or []],
         )
     return topics
+
+
+TOPIC_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+TOPICS_HEADER = """\
+# 개념 그룹(facet) 구조: 같은 facet 안은 OR, facet끼리는 AND.
+# exact_phrases 는 단독으로도 매칭, exclude_phrases 는 수집 후 제목+초록에서 걸러낸다.
+# 대시보드에서 저장하면 이 파일이 다시 쓰인다 (주석은 이 머리말만 유지됨).
+"""
+
+
+def save_topic(topic: Topic, path: Path = CONFIG_DIR / "topics.yaml") -> None:
+    """Add or replace one topic in topics.yaml."""
+    if not TOPIC_NAME_RE.match(topic.name):
+        raise ValueError("주제 이름은 영문, 숫자, _, - 만 쓸 수 있습니다")
+    if not topic.facets and not topic.exact_phrases:
+        raise ValueError("facet 또는 exact phrase가 하나 이상 있어야 합니다")
+    raw = _read_yaml(path) if path.exists() else {}
+    raw[topic.name] = topic.to_dict()
+    body = yaml.safe_dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=None, width=120)
+    path.write_text(TOPICS_HEADER + body, encoding="utf-8")
 
 
 def load_journals(path: Path = CONFIG_DIR / "journals.yaml") -> dict[str, list[str]]:

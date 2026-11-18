@@ -431,7 +431,8 @@ with st.sidebar:
                 "NST Paper Finder</div>", unsafe_allow_html=True)
     # A dropdown of rows (topic | delete icon): a selectbox cannot hold a button per option.
     st.caption("주제")
-    with st.popover(topic_label(topic_name), width="stretch", icon=":material/expand_more:"), \
+    # Label: the open topic; '비어있음' while no topic exists yet (the menu's own chevron marks it as a dropdown).
+    with st.popover(topic_label(topic_name) if topics else "비어있음", width="stretch"), \
             st.container(key="topicmenu"):
         for n in topics:
             c1, c2 = st.columns([6, 1], vertical_alignment="center")

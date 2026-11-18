@@ -1,0 +1,14 @@
+# 개념 그룹(facet) 구조: 같은 facet 안은 OR, facet끼리는 AND.
+# exact_phrases 는 단독으로도 매칭, exclude_phrases 는 수집 후 제목+초록에서 걸러낸다.
+transient_bioelectronics:
+  facets:
+    material:     [bioresorbable, biodegradable, transient, bioabsorbable, dissolvable]
+    electronics:  [electronics, electronic, wireless, bioelectronic, bioelectronics, piezoelectric, triboelectric]
+    application:  [implant, implantable, sensor, stimulator, "neural interface", pacemaker]
+  exact_phrases:
+    - "transient electronics"
+    - "bioresorbable electronics"
+    - "biodegradable electronics"
+  exclude_phrases:
+    - "transient electronic excitation"
+    - "transient absorption"

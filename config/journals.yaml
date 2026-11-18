@@ -1,0 +1,24 @@
+# PubMed [ta] (journal title abbreviation) 기준. 그룹당 8~10개 이하 유지 (연산자 제한).
+# 초안 — 연구실 검토 필요 (SPEC §11).
+tier1_general:
+  - Nature
+  - Science
+  - Proc Natl Acad Sci U S A
+  - Nat Commun
+  - Sci Adv
+tier1_bme:
+  - Nat Biomed Eng
+  - Sci Transl Med
+  - Nat Biotechnol
+  - Nat Electron
+  - Nat Mater
+materials_devices:
+  - Adv Mater
+  - Adv Funct Mater
+  - Adv Sci (Weinh)
+  - ACS Nano
+  - Adv Healthc Mater
+  - Biomaterials
+  - Bioact Mater
+  - Biosens Bioelectron
+  - npj Flex Electron   # PubMed 수록 여부 확인 필요. 미수록이면 Phase 3에서 OpenAlex로 수집

@@ -18,6 +18,21 @@ def _isolated_config(tmp_path_factory, monkeypatch):
     for name in ("journals.yaml", "openalex_sources.yaml"):
         shutil.copy(_REAL_CONFIG / name, d / name)
     monkeypatch.setattr(cfg, "CONFIG_DIR", d)
+    # Never touch the real service: a DATABASE_URL / ADMIN_EMAILS in .env must not reach tests (an empty
+    # environment variable wins over .env in load_settings).
+    for var in ("DATABASE_URL", "ADMIN_EMAILS", "PAPER_FINDER_FAKE_LOGIN"):
+        monkeypatch.setenv(var, "")
+    monkeypatch.delenv("PAPER_FINDER_FAKE_LOGIN")
+    # Second guard: refuse any Postgres connection except the explicit TEST_DATABASE_URL.
+    import os
+    from paper_finder import db
+    real_connect = db.connect
+
+    def guarded(target):
+        if db.is_postgres(target) and target != os.environ.get("TEST_DATABASE_URL"):
+            raise RuntimeError("tests must not connect to a real Postgres database")
+        return real_connect(target)
+    monkeypatch.setattr(db, "connect", guarded)
     yield d
 
 

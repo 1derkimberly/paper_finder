@@ -643,6 +643,7 @@ with st.sidebar:
             st.caption("구글 계정으로 로그인하면 읽음 표시와 메모를 저장할 수 있습니다.")
             st.button("구글로 로그인", on_click=st.login, type="primary", width="stretch", icon=":material/login:")
     st.caption(f"DB: `{db.describe(DB_PATH)}`")
+    st.page_link("pages/privacy.py", label="개인정보처리방침", icon=":material/policy:")
 
 
 # ------------------------------------------------------------------ keywords

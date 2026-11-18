@@ -1,6 +1,10 @@
 [server]
 runOnSave = false
 
+[client]
+# pages/privacy.py is reached by its URL (/privacy) and the sidebar link, not a page menu
+showSidebarNavigation = false
+
 [theme]
 # One accent (blue) that matches the chart bars; Korean-friendly font.
 font = "Pretendard, 'Noto Sans KR', 'Malgun Gothic', sans-serif"

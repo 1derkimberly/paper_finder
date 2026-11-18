@@ -179,7 +179,10 @@ def test_app_new_topic_starts_with_claude(tmp_path, monkeypatch):
     at = AppTest.from_file("../app.py", default_timeout=30).run()
     at.sidebar.selectbox[0].set_value("＋ 새 주제 만들기").run()
     assert not at.exception, [e.value for e in at.exception]
-    at.text_area(key="nt_desc").input("녹는 배터리").run()
+    btn = next(b for b in at.button if b.label == "Claude 용어 제안 받기")
+    btn.click().run()                                   # empty description -> warning, no Claude call
+    assert any("먼저 입력" in w.value for w in at.warning)
+    at.text_area(key="nt_desc").input("녹는 배터리")      # typed but not yet "committed": the button still works
     assert not any("직접" in e.label for e in at.expander)          # no manual keyword entry
     next(b for b in at.button if b.label == "Claude 용어 제안 받기").click().run()
     assert not at.exception, [e.value for e in at.exception]

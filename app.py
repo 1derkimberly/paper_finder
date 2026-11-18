@@ -423,9 +423,15 @@ def new_topic_page() -> None:
 
     st.caption("어떤 논문을 찾고 싶은지 문장으로 설명하면 Claude가 검색 키워드(개념 그룹·정확한 문구·제외 문구)를 제안합니다. "
                "고른 키워드로 주제를 만든 뒤 사이드바의 **업데이트 실행**으로 논문을 수집합니다.")
-    desc = st.text_area("주제 설명 (한국어 가능)", key="nt_desc", height=100,
-                        placeholder="예: 몸 안에서 녹아 없어지는 배터리나 전원 장치. 이식형 의료기기에 전력을 공급하는 연구")
-    if st.button("Claude 용어 제안 받기", type="primary", disabled=not desc.strip()):
+    # A form sends what is typed when the button is pressed, so the button works right away
+    # (a plain text_area only reports its value after focus leaves it).
+    with st.form("nt_form", border=False):
+        desc = st.text_area("주제 설명 (한국어 가능)", key="nt_desc", height=100,
+                            placeholder="예: 몸 안에서 녹아 없어지는 배터리나 전원 장치. 이식형 의료기기에 전력을 공급하는 연구")
+        asked = st.form_submit_button("Claude 용어 제안 받기", type="primary", icon=":material/auto_awesome:")
+    if asked and not desc.strip():
+        st.warning("주제 설명을 먼저 입력해 주세요.")
+    elif asked:
         with st.spinner("Claude가 검색 키워드를 만드는 중…"):
             try:
                 sug = suggest_terms(llm, desc.strip(), None)

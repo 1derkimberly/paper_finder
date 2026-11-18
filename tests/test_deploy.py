@@ -125,7 +125,7 @@ def _suggest(monkeypatch, name="zinc_battery"):
 
 def _create(at, desc="녹는 배터리"):
     at.sidebar.selectbox[0].set_value("＋ 새 주제 만들기").run()
-    at.text_area(key="nt_desc").input(desc).run()
+    at.text_area(key="nt_desc").input(desc)          # form: typed text is sent with the button press
     next(b for b in at.button if b.label == "Claude 용어 제안 받기").click().run()
     next(b for b in at.button if b.label == "이 키워드로 주제 만들기").click().run()
     assert not at.exception, [e.value for e in at.exception]

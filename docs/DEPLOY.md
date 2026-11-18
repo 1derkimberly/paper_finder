@@ -22,7 +22,7 @@ API 비용(Claude)만 관리자 키로 나갑니다.
 1. https://supabase.com 가입 → **New project**. Region은 `Northeast Asia (Seoul)`. DB 비밀번호를 정해 따로 적어 둡니다.
 2. 프로젝트 화면 위쪽 **Connect** → **Transaction pooler** 의 URI를 복사합니다 (포트 `6543`).
    `[YOUR-PASSWORD]` 자리를 1번의 비밀번호로 바꾼 것이 `DATABASE_URL` 입니다.
-3. 표(테이블)는 앱이 처음 연결될 때 자동으로 만들어집니다. 첫 실행 때 `config/topics.yaml` 의 주제가 DB로 복사됩니다.
+3. 표(테이블)는 앱이 처음 연결될 때 자동으로 만들어집니다. 서비스는 주제 없이 시작하고, 방문자·사용자가 직접 주제를 만듭니다.
 
 무료 프로젝트는 7일 동안 아무 접속이 없으면 일시 정지됩니다. 주 2회 자동 업데이트가 접속으로 잡히므로 보통은 멈추지 않습니다.
 

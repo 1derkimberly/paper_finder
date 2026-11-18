@@ -1,8 +1,7 @@
 """Where topic definitions live: config/topics.yaml for local single-user use, the database otherwise.
 
 In the database each topic has an owner ('' = admin / public, an email, or anon:<session> for a visitor).
-The first time the database has no topics, the ones in topics.yaml (from the repository) are copied in as
-public topics.
+The service starts with no topics (topics.yaml is not copied in).
 """
 
 from __future__ import annotations
@@ -46,12 +45,7 @@ class TopicStore:
             return {n: TopicInfo(t) for n, t in topics.items()}
         conn = db.connect(self.db_target)
         try:
-            topics = db.load_topic_defs(conn)
-            if not topics and self.yaml_path.exists():
-                with conn:
-                    for t in load_topics(self.yaml_path).values():
-                        db.save_topic_def(conn, t, owner="")
-                topics = db.load_topic_defs(conn)
+            topics = db.load_topic_defs(conn)   # a new service starts empty; users create their own topics
             meta = {r["name"]: r for r in db.topic_def_rows(conn)}
         finally:
             conn.close()

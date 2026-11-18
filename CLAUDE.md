@@ -100,7 +100,7 @@ tests/                 pytest (network 마커는 실제 API 호출)
 - 미리보기용 별도 데이터: `PAPER_FINDER_CONFIG`·`PAPER_FINDER_DB`·`PAPER_FINDER_REPORTS` 환경 변수로 다른 폴더를 가리킬 수 있다 (`.claude/launch.json` 의 dashboard-demo, 포트 8502)
 - 공개 배포([docs/DEPLOY.md](docs/DEPLOY.md)): Streamlit Community Cloud + Supabase Postgres + GitHub Actions(월·목 업데이트)
   - `DATABASE_URL`(postgres://)이 있으면 Postgres, 없으면 SQLite. `db.Conn` 이 `?`→`%s` 변환, INSERT는 `RETURNING id`. Supabase는 transaction pooler(6543) + `prepare_threshold=None`
-  - 배포 모드에선 주제 정의를 DB `topic_defs` 에 저장 (`topics_store.TopicStore`). DB가 비면 `config/topics.yaml` 에서 복사
+  - 배포 모드에선 주제 정의를 DB `topic_defs` 에 저장 (`topics_store.TopicStore`). 서비스는 주제 없이 시작한다 (topics.yaml을 복사하지 않음, 사용자가 직접 만듦)
   - secrets에 `[auth]` 가 있으면 구글 로그인(st.login). 역할(`quota.Role`): 방문자(anon:<세션>, 최근 1년·주제 1개·세션 한정), 로그인(이메일, 주제 3개), 관리자(`ADMIN_EMAILS`, 제한 없음 + ⚙ 관리 화면). 로컬(secrets 없음)은 관리자 1명
   - 주제 소유: `topic_defs.owner` (''=관리자/공개, 이메일, anon:*). 비관리자 주제 ID는 `이름-<owner 해시 6자>`, 표시 이름은 `title`. 공개 주제 + 내 주제만 보이고(관리자는 전부), 고치기·업데이트·삭제는 소유자/관리자만
   - Claude 사용은 `api_usage` 에 기록(`quota.claude_for`), 방문자+로그인 합계가 하루 한도(`app_settings.daily_budget_usd`, 기본 $1)를 넘으면 그날 Claude 기능 중단. 관리자·자동 업데이트(role system)는 막지 않음

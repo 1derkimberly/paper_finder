@@ -32,6 +32,8 @@ def _fill(target):
             db.link(conn, tid, pid, s)
             ids.append(pid)
         db.record_run(conn, TOPIC.name, datetime.now(), "cli", 2, 2)
+        if not db.is_postgres(target):
+            db.save_topic_def(conn, TOPIC, owner="")      # a public (admin) topic for the app tests
     conn.close()
     return ids
 
@@ -72,16 +74,15 @@ def test_storage_postgres():
     _storage_roundtrip(url)
 
 
-def test_topic_store_seeds_db_from_yaml(tmp_path, monkeypatch):
+def test_topic_store_starts_empty(tmp_path, monkeypatch):
     # treat a SQLite path as "in DB" to exercise the seeding logic without Postgres
     store = TopicStore(tmp_path / "t.db", FIXTURE_TOPICS)
     monkeypatch.setattr(TopicStore, "in_db", property(lambda self: True))
-    assert list(store.load()) == ["transient_bioelectronics"]               # copied from YAML
+    assert store.load() == {}                                               # starts empty (YAML not copied)
+    store.save(TOPIC, owner="")
+    assert list(store.load()) == ["transient_bioelectronics"]
     store.remove("transient_bioelectronics")
-    assert store.load()["transient_bioelectronics"].to_dict() == TOPIC.to_dict()   # reseeded when empty
-    conn = db.connect(tmp_path / "t.db")
-    assert list(db.load_topic_defs(conn)) == ["transient_bioelectronics"]
-    conn.close()
+    assert store.load() == {}
 
 
 def test_last_update_report_from_db(tmp_path):
@@ -211,6 +212,10 @@ def test_admin_maintenance_page(tmp_path, monkeypatch):
     assert not at.exception, [e.value for e in at.exception]
     from paper_finder.quota import load_limits
     assert load_limits(tmp_path / "t.db").daily_budget_usd == 2.5
+    # deleting a topic from the admin page needs its ID typed in
+    assert at.button(key="admin_delete").disabled
+    at.text_input(key="admin_delete_confirm").input("transient_bioelectronics").run()
+    assert not at.button(key="admin_delete").disabled
     next(b for b in at.button if "정리" in b.label).click().run()
     assert not at.exception, [e.value for e in at.exception]
     assert any("지웠습니다" in s.value for s in at.success)
@@ -231,5 +236,20 @@ def test_cleanup_removes_expired_visitor_topics(tmp_path):
     st = cleanup(path, 24, now=datetime.now() + timedelta(hours=25))
     assert st.visitor_topics == 1
     conn = db.connect(path)
-    assert {r["name"] for r in db.topic_def_rows(conn)} == {"u-1"}
+    assert {r["name"] for r in db.topic_def_rows(conn)} == {"u-1", "transient_bioelectronics"}
     conn.close()
+
+
+def test_empty_service_starts_with_new_topic(tmp_path, monkeypatch):
+    """No topics yet: everyone lands on the welcome / new-topic screen and can still log in."""
+    from streamlit.testing.v1 import AppTest
+
+    import paper_finder.config as cfg
+    monkeypatch.setattr(cfg, "DEFAULT_DB", tmp_path / "empty.db")
+    monkeypatch.setenv("PAPER_FINDER_FAKE_LOGIN", "")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-used")
+    at = AppTest.from_file("../app.py", default_timeout=30).run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert at.sidebar.selectbox[0].options == ["＋ 새 주제 만들기"]
+    assert at.title[0].value == "Paper Finder"
+    assert "구글로 로그인" in [b.label for b in at.button]

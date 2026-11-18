@@ -361,9 +361,29 @@ def create_topic(t: Topic) -> None:
     st.rerun()
 
 
+def sidebar_footer() -> None:
+    """Login / logout, DB label and privacy link: shown on every screen (also with no topics yet)."""
+    if AUTH:
+        st.divider()
+        if EMAIL:
+            st.caption(f":material/account_circle: {EMAIL}" + (" · 관리자" if IS_ADMIN else ""))
+            st.button("로그아웃", on_click=st.logout, width="stretch", icon=":material/logout:")
+        else:
+            st.caption("구글 계정으로 로그인하면 내 주제를 계속 쓰고 읽음 표시와 메모를 저장할 수 있습니다.")
+            st.button("구글로 로그인", on_click=st.login, type="primary", width="stretch", icon=":material/login:")
+    st.caption(f"DB: `{db.describe(DB_PATH)}`")
+    st.page_link("pages/privacy.py", label="개인정보처리방침", icon=":material/policy:")
+
+
 def new_topic_page() -> None:
     """New topic: describe it in words -> Claude proposes the search terms -> pick -> create."""
-    st.title("새 주제")
+    if not topics:
+        st.title("Paper Finder")
+        st.markdown("관심 있는 연구 주제를 문장으로 설명하면 Claude가 검색 키워드를 만들고, 상위 저널의 최신 논문을 "
+                    "모아 관련성 판정과 한국어 한 줄 요약까지 붙여 줍니다. 아래에서 첫 주제를 만들어 보세요.")
+        st.subheader("새 주제")
+    else:
+        st.title("새 주제")
     limit = ROLE.max_topics(LIMITS)
     if limit is not None:
         used = owned_count()
@@ -518,10 +538,13 @@ def admin_page() -> None:
         } for n, i in INFOS.items()])
         st.dataframe(table, hide_index=True, width="stretch")
         if not table.empty:
-            c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
-            target = c1.selectbox("지울 주제", list(INFOS), format_func=lambda n: f"{INFOS[n].title or n} ({n})")
-            if c2.button("삭제", key="admin_delete", disabled=not target):
-                delete_topic(target)
+            with st.expander("주제 삭제", icon=":material/delete:"):
+                target = st.selectbox("지울 주제", list(INFOS), format_func=lambda n: f"{INFOS[n].title or n} ({n})")
+                st.caption("주제와 그 주제의 논문 연결·업데이트 기록이 지워지며 되돌릴 수 없습니다.")
+                confirm = st.text_input("확인을 위해 주제 ID를 그대로 입력하세요", key="admin_delete_confirm",
+                                        placeholder=target)
+                if st.button("삭제", key="admin_delete", type="primary", disabled=confirm.strip() != target):
+                    delete_topic(target)
 
     # -------------------------------------------------- runs
     with t_runs:
@@ -582,11 +605,13 @@ def admin_page() -> None:
                 bump_data_version()
 
 
-if topic_name == NEW_TOPIC:
-    new_topic_page()
-    st.stop()
-if topic_name == ADMIN_PAGE:
-    admin_page()
+if topic_name in (NEW_TOPIC, ADMIN_PAGE):
+    with st.sidebar:
+        sidebar_footer()
+    if topic_name == NEW_TOPIC:
+        new_topic_page()
+    else:
+        admin_page()
     st.stop()
 
 with st.sidebar:
@@ -642,16 +667,7 @@ with st.sidebar:
             if st.button("삭제", type="primary", disabled=confirm.strip() != topic_name, key=f"del_{topic_name}"):
                 delete_topic(topic_name)
 
-    if AUTH:
-        st.divider()
-        if EMAIL:
-            st.caption(f":material/account_circle: {EMAIL}" + (" · 관리자" if IS_ADMIN else ""))
-            st.button("로그아웃", on_click=st.logout, width="stretch", icon=":material/logout:")
-        else:
-            st.caption("구글 계정으로 로그인하면 읽음 표시와 메모를 저장할 수 있습니다.")
-            st.button("구글로 로그인", on_click=st.login, type="primary", width="stretch", icon=":material/login:")
-    st.caption(f"DB: `{db.describe(DB_PATH)}`")
-    st.page_link("pages/privacy.py", label="개인정보처리방침", icon=":material/policy:")
+    sidebar_footer()
 
 
 # ------------------------------------------------------------------ keywords

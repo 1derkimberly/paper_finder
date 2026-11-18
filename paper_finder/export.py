@@ -10,7 +10,8 @@ import pandas as pd
 CSV_COLUMNS = {
     "title": "title", "authors": "authors", "journal": "journal", "pub_date": "pub_date",
     "doi": "doi", "pmid": "pmid", "relevance": "relevance", "cited_by": "cited_by",
-    "status": "status", "note": "note", "first_seen": "first_seen", "abstract": "abstract",
+    "oa_url": "oa_url", "source": "source", "status": "status", "note": "note",
+    "first_seen": "first_seen", "abstract": "abstract",
 }
 
 

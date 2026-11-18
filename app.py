@@ -9,12 +9,13 @@ import pandas as pd
 import streamlit as st
 
 from paper_finder import db
-from paper_finder.config import (CONFIG_DIR, DEFAULT_DB, Topic, load_journals, load_settings,
-                                 load_topics, save_topic)
-from paper_finder.dashboard_data import (Filters, apply_filters, display_title, load_frame, metrics,
-                                         per_journal, per_year, term_frequency)
+from paper_finder.config import (CONFIG_DIR, DEFAULT_DB, Topic, load_journals, load_openalex_sources,
+                                 load_settings, load_topics, save_topic)
+from paper_finder.dashboard_data import (SORTS, Filters, apply_filters, citation_coverage, display_title,
+                                         load_frame, metrics, per_journal, per_year, sort_frame, term_frequency)
 from paper_finder.export import to_bibtex, to_csv
-from paper_finder.pipeline import run
+from paper_finder.openalex import OpenAlexClient, OpenAlexError
+from paper_finder.pipeline import enrich_db, run
 from paper_finder.pubmed import PubMedClient
 from paper_finder.query import build_query, years_ago
 
@@ -79,25 +80,47 @@ def save_mark(paper_id: int, status: str, note: str) -> None:
     bump_data_version()
 
 
+def openalex_client() -> OpenAlexClient:
+    s = load_settings()
+    return OpenAlexClient(api_key=s.openalex_api_key, mailto=s.openalex_mailto)
+
+
 def run_update(topic: Topic, groups: dict[str, list[str]], years: int) -> None:
     end = date.today()
     start = years_ago(end, years)
     settings = load_settings()
     client = PubMedClient(api_key=settings.ncbi_api_key, email=settings.ncbi_email)
-    with st.status("PubMed 검색 중…", expanded=True) as status:
+    with st.status("PubMed·OpenAlex 검색 중… (OpenAlex가 붐비면 최대 2분)", expanded=True) as status:
         try:
-            res = run(client, topic, groups, start, end, db_path=DB_PATH)
+            res = run(client, topic, groups, start, end, db_path=DB_PATH,
+                      openalex=openalex_client(), openalex_sources=load_openalex_sources())
         except Exception as e:  # network / PubMed errors shown to the user
             status.update(label=f"업데이트 실패: {e}", state="error")
             return
         for g in res.groups:
             st.write(f"**{g.group}**: {g.count}건" + (f" — 경고: {g.warnings}" if g.warnings else ""))
-        st.write(f"고유 PMID {len(res.unique_pmids)}건 → 저장 {len(res.kept)}건, "
-                 f"제외 {len(res.excluded)}건, 신규 {res.new_count}건")
+        if res.openalex_found:
+            st.write(f"OpenAlex 보완 검색: {res.openalex_found}건 → PubMed 결과에 없던 {res.openalex_added}건 추가")
+        st.write(f"저장 {len(res.kept)}건, 제외 {len(res.excluded)}건, 신규 {res.new_count}건")
+        if res.enrich:
+            st.write(f"OpenAlex DOI 매칭: {res.enrich.matched}/{res.enrich.with_doi} ({res.enrich.rate:.0%})")
+        for w in res.warnings:
+            st.warning(w)
         for p, reason in res.excluded:
             st.caption(f"제외 ({reason}): {p.title}")
-        status.update(label=f"업데이트 완료: {len(res.kept)}건 (신규 {res.new_count}건)", state="complete",
-                      expanded=False)
+        status.update(label=f"업데이트 완료: {len(res.kept)}건 (신규 {res.new_count}건)",
+                      state="complete" if not res.warnings else "error", expanded=bool(res.warnings))
+    bump_data_version()
+
+
+def refresh_citations() -> None:
+    with st.spinner("OpenAlex에서 인용 수 갱신 중…"):
+        try:
+            stats = enrich_db(openalex_client(), DB_PATH)
+        except OpenAlexError as e:
+            st.error(str(e))
+            return
+    st.success(f"인용 수 갱신: {stats.matched}/{stats.with_doi}건 ({stats.rate:.0%})")
     bump_data_version()
 
 
@@ -143,6 +166,10 @@ with st.sidebar:
     years = st.slider("기간 (최근 N년)", 1, 10, 5)
     if st.button("업데이트 실행", type="primary", use_container_width=True, disabled=not sel_groups):
         run_update(topic, {g: journal_groups[g] for g in sel_groups}, years)
+    if st.button("인용 수 갱신", use_container_width=True, help="저장된 모든 논문의 인용 수·OA 링크를 OpenAlex에서 다시 받음"):
+        refresh_citations()
+    if not load_settings().openalex_api_key:
+        st.caption("OpenAlex API 키 없음: 검색이 몰리면 보완 검색이 실패할 수 있습니다 (`.env`의 OPENALEX_API_KEY).")
     st.caption(f"DB: `{DB_PATH.relative_to(DB_PATH.parent.parent)}`")
 
 
@@ -212,6 +239,11 @@ c1, c2, c3 = st.columns(3)
 c1.metric("총 논문 수", f"{m['total']:,}", help=f"전체 저장 {len(df_all)}건 중 필터 통과")
 c2.metric("이번 주 신규", f"{m['new']:,}")
 c3.metric("상위 저널 비율", f"{m['top_ratio']:.0%}", help="tier1_* 저널 그룹에 속한 논문 비율")
+matched, with_doi = citation_coverage(df)
+n_oa_only = int((df["source"] == "openalex").sum())
+st.caption(f"인용 수·OA 링크: OpenAlex (DOI 매칭 {matched}/{with_doi}"
+           + (f", {matched / with_doi:.0%}" if with_doi else "") + ")"
+           + (f" · PubMed 수록이 부분적인 저널에서 OpenAlex로 보완한 논문 {n_oa_only}건" if n_oa_only else ""))
 
 if df.empty:
     st.warning("필터 조건에 맞는 논문이 없습니다.")
@@ -244,7 +276,10 @@ exp1.download_button("CSV", to_csv(df), file_name=f"{topic_name}.csv", mime="tex
 exp2.download_button("BibTeX", to_bibtex(df), file_name=f"{topic_name}.bib", mime="application/x-bibtex",
                      use_container_width=True)
 
-view = st.segmented_control("보기", ["표", "카드"], default="표", label_visibility="collapsed")
+v1, v2 = st.columns([3, 1])
+view = v1.segmented_control("보기", ["표", "카드"], default="표", label_visibility="collapsed")
+sort_by = v2.selectbox("정렬", list(SORTS), label_visibility="collapsed")
+df = sort_frame(df, sort_by)
 
 if view == "카드":
     pages = max(1, -(-len(df) // PAGE_SIZE))
@@ -259,9 +294,17 @@ if view == "카드":
             links = []
             if r["doi"]:
                 links.append(f"[DOI](https://doi.org/{r['doi']})")
-            links.append(f"[PubMed](https://pubmed.ncbi.nlm.nih.gov/{r['pmid']}/)")
-            st.markdown(" · ".join(links) + f" · 관련도 **{r['relevance']:.0f}**")
-            st.write(r["abstract"] or "_초록 없음_")
+            if r["pmid"]:
+                links.append(f"[PubMed](https://pubmed.ncbi.nlm.nih.gov/{r['pmid']}/)")
+            if r["openalex_id"]:
+                links.append(f"[OpenAlex](https://openalex.org/{r['openalex_id']})")
+            if r["oa_url"]:
+                links.append(f"[무료 전문]({r['oa_url']})")
+            cites = f" · 인용 **{r['cited_by']}**" if pd.notna(r["cited_by"]) else ""
+            st.markdown(" · ".join(links) + f" · 관련도 **{r['relevance']:.0f}**{cites}")
+            if r["source"] == "openalex":
+                st.caption("PubMed 검색에서 빠져 OpenAlex 보완 검색으로 수집 (관련도는 제목·초록 기준)")
+            st.write(r["abstract"] or "_초록 없음 (출판사가 OpenAlex에 초록을 제공하지 않음)_")
             terms = [t for ts in r["matched_terms"].values() for t in ts]
             if terms:
                 st.caption("매칭 용어: " + ", ".join(terms))
@@ -279,27 +322,30 @@ else:
         "신규": df["is_new"].map(lambda x: "NEW" if x else ""),
         "제목": [display_title(t, rv) for t, rv in zip(df["title"], df["is_review"])],
         "링크": df.apply(lambda r: f"https://doi.org/{r['doi']}" if r["doi"]
-                       else f"https://pubmed.ncbi.nlm.nih.gov/{r['pmid']}/", axis=1),
+                       else f"https://pubmed.ncbi.nlm.nih.gov/{r['pmid']}/" if r["pmid"]
+                       else f"https://openalex.org/{r['openalex_id']}", axis=1),
         "저널": df["journal"],
         "날짜": df["pub_date"],
         "인용": df["cited_by"],
         "관련도": df["relevance"],
+        "전문": df["oa_url"].fillna(""),
         "상태": df["status"].map(STATUS_LABELS),
         "메모": df["note"],
     }).set_index("id")
-    if table["인용"].isna().all():  # filled from Phase 3 (OpenAlex) on
+    if table["인용"].isna().all():  # not enriched yet
         table = table.drop(columns=["인용"])
     edited_table = st.data_editor(
         table,
         hide_index=True,
         use_container_width=True,
         height=min(640, 38 + 35 * len(table)),
-        disabled=["신규", "제목", "링크", "저널", "날짜", "인용", "관련도"],
+        disabled=["신규", "제목", "링크", "저널", "날짜", "인용", "관련도", "전문"],
         column_config={
             "신규": st.column_config.TextColumn(width=50),
             "제목": st.column_config.TextColumn(width="large"),
             "링크": st.column_config.LinkColumn(display_text="열기", width=60),
-            "인용": st.column_config.NumberColumn(help="Phase 3 (OpenAlex)에서 채워짐", width=60),
+            "인용": st.column_config.NumberColumn(help="OpenAlex 인용 수", width=60),
+            "전문": st.column_config.LinkColumn(display_text="OA", width=50, help="무료 전문 (OpenAlex)"),
             "관련도": st.column_config.NumberColumn(format="%.0f", width=60),
             "상태": st.column_config.SelectboxColumn(options=list(STATUS_LABELS.values()), required=True,
                                                     width="small"),

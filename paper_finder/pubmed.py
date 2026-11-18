@@ -18,7 +18,7 @@ _MONTHS = {m: i for i, m in enumerate(
 
 @dataclass
 class Paper:
-    pmid: str
+    pmid: str | None  # None for OpenAlex-only papers
     title: str
     abstract: str = ""
     journal: str = ""
@@ -27,6 +27,10 @@ class Paper:
     doi: str | None = None
     mesh: list[str] = field(default_factory=list)
     pub_types: list[str] = field(default_factory=list)  # PubMed PublicationType, e.g. "Review"
+    source: str = "pubmed"            # "pubmed" | "openalex" (where the record came from)
+    openalex_id: str | None = None    # filled by OpenAlex enrichment
+    cited_by: int | None = None
+    oa_url: str | None = None
 
 
 def is_review(pub_types: list[str]) -> bool:

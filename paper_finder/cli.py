@@ -9,8 +9,10 @@ from datetime import date
 from pathlib import Path
 
 from paper_finder import db
-from paper_finder.config import CONFIG_DIR, DEFAULT_DB, load_journals, load_settings, load_topics
-from paper_finder.pipeline import run
+from paper_finder.config import (CONFIG_DIR, DEFAULT_DB, load_journals, load_openalex_sources, load_settings,
+                                 load_topics)
+from paper_finder.openalex import OpenAlexClient, OpenAlexError
+from paper_finder.pipeline import enrich_db, run
 from paper_finder.dashboard_data import display_title
 from paper_finder.pubmed import PubMedClient, is_review
 from paper_finder.query import years_ago
@@ -35,13 +37,26 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--end", type=_parse_date, help="YYYY-MM-DD (default today)")
     s.add_argument("--dry-run", action="store_true", help="only print queries and hit counts")
     s.add_argument("--show-query", action="store_true", help="print the full query per group")
+    s.add_argument("--no-openalex", action="store_true",
+                   help="skip OpenAlex supplement search and citation lookup")
+    s.add_argument("--quiet", action="store_true", help="do not print the paper list")
 
     ls = sub.add_parser("list", help="list stored papers for a topic")
     ls.add_argument("topic")
     ls.add_argument("--limit", type=int, default=50)
 
+    sub.add_parser("enrich", help="refresh OpenAlex citation counts / OA links for all stored papers")
     sub.add_parser("topics", help="list configured topics and journal groups")
     return ap
+
+
+def _openalex_client() -> OpenAlexClient:
+    s = load_settings()
+    return OpenAlexClient(api_key=s.openalex_api_key, mailto=s.openalex_mailto)
+
+
+def _print_enrich(stats) -> None:
+    print(f"OpenAlex DOI match: {stats.matched}/{stats.with_doi} ({stats.rate:.1%})")
 
 
 def _cmd_search(args) -> int:
@@ -65,7 +80,9 @@ def _cmd_search(args) -> int:
 
     print(f"topic={args.topic}  period={start}..{end}  groups={', '.join(groups)}")
     res = run(client, topics[args.topic], groups, start, end,
-              db_path=None if args.dry_run else args.db, dry_run=args.dry_run)
+              db_path=None if args.dry_run else args.db, dry_run=args.dry_run,
+              openalex=None if args.no_openalex else _openalex_client(),
+              openalex_sources=load_openalex_sources())
 
     for g in res.groups:
         print(f"  [{g.group}] {g.count} hits")
@@ -77,15 +94,36 @@ def _cmd_search(args) -> int:
     if args.dry_run:
         return 0
 
+    if res.openalex_found:
+        print(f"OpenAlex supplement: {res.openalex_found} hits -> {res.openalex_added} added (not in PubMed results)")
     print(f"kept: {len(res.kept)}  excluded: {len(res.excluded)}  new in DB: {res.new_count}")
+    if res.enrich:
+        _print_enrich(res.enrich)
+    for w in res.warnings:
+        print(f"WARNING: {w}")
     for p, reason in res.excluded:
         print(f"  - excluded ({reason}): {p.title[:90]}  [{p.journal}]")
-    print()
-    for i, s in enumerate(res.kept, 1):
-        p = s.paper
-        print(f"{i:3d}. [{s.relevance:.0f}] {display_title(p.title, is_review(p.pub_types))[:100]}")
-        print(f"      {p.journal}, {p.pub_date}  doi:{p.doi or '-'}  pmid:{p.pmid}")
+    if not args.quiet:
+        print()
+        for i, s in enumerate(res.kept, 1):
+            p = s.paper
+            cites = f"  cited:{p.cited_by}" if p.cited_by is not None else ""
+            print(f"{i:3d}. [{s.relevance:.0f}] {display_title(p.title, is_review(p.pub_types))[:100]}")
+            print(f"      {p.journal}, {p.pub_date}  doi:{p.doi or '-'}  pmid:{p.pmid or '-'}{cites}")
     print(f"\nsaved to {args.db}")
+    return 0
+
+
+def _cmd_enrich(args) -> int:
+    if not args.db.exists():
+        print(f"no database at {args.db}; run `search` first", file=sys.stderr)
+        return 1
+    try:
+        stats = enrich_db(_openalex_client(), args.db)
+    except OpenAlexError as e:
+        print(f"OpenAlex error: {e}", file=sys.stderr)
+        return 1
+    _print_enrich(stats)
     return 0
 
 
@@ -124,4 +162,5 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     args = _build_parser().parse_args(argv)
-    return {"search": _cmd_search, "list": _cmd_list, "topics": _cmd_topics}[args.cmd](args)
+    return {"search": _cmd_search, "list": _cmd_list, "enrich": _cmd_enrich,
+            "topics": _cmd_topics}[args.cmd](args)

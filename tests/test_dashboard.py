@@ -7,6 +7,7 @@ import pytest
 
 from paper_finder import db
 from paper_finder.config import CONFIG_DIR, Topic, load_topics, save_topic
+from paper_finder.dashboard_data import citation_coverage, sort_frame
 from paper_finder.dashboard_data import Filters, apply_filters, display_title, load_frame, metrics, per_year, term_frequency
 from paper_finder.export import to_bibtex, to_csv
 from paper_finder.process import process
@@ -64,6 +65,18 @@ def test_filters(db_path):
     assert set(apply_filters(df, Filters(text="PIEZO"))["pmid"]) == {"2"}
     assert set(apply_filters(df, Filters(new_only=True))["pmid"]) == {"1"}
     assert len(apply_filters(df, Filters(statuses=[""]))) == 3
+
+
+def test_sort_and_citation_coverage(db_path):
+    conn = db.connect(db_path)
+    with conn:
+        pid = conn.execute("SELECT id FROM papers WHERE pmid='3'").fetchone()["id"]
+        db.set_enrichment(conn, pid, "W3", 99, None)
+    conn.close()
+    df = load_frame(db_path, TOPIC.name, GROUPS)
+    assert sort_frame(df, "인용 수")["pmid"].iloc[0] == "3"      # NaN citations go last
+    assert sort_frame(df, "최신순")["pmid"].iloc[0] == "1"
+    assert citation_coverage(df) == (0, 2)                        # paper 3 has no DOI
 
 
 def test_marks_roundtrip(db_path):

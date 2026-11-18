@@ -17,12 +17,17 @@ NEW_DAYS = 7
 TOP_GROUP_PREFIX = "tier1"  # journal groups counted as "상위 저널"
 
 COLUMNS = ["id", "pmid", "doi", "title", "abstract", "journal", "group", "pub_date", "pub_dt", "year",
-           "authors", "mesh", "pub_types", "is_review", "cited_by", "oa_url", "first_seen", "is_new", "relevance",
-           "matched_terms", "status", "note"]
+           "authors", "mesh", "pub_types", "is_review", "cited_by", "oa_url", "source", "openalex_id",
+           "first_seen", "is_new", "relevance", "matched_terms", "status", "note"]
 
 
 def journal_to_group(journal_groups: dict[str, list[str]]) -> dict[str, str]:
     return {j.lower(): g for g, js in journal_groups.items() for j in js}
+
+
+def journal_canonical(journal_groups: dict[str, list[str]]) -> dict[str, str]:
+    """PubMed and OpenAlex may differ in case ('Npj Flex Electron'); use the journals.yaml spelling."""
+    return {j.lower(): j for js in journal_groups.values() for j in js}
 
 
 def _pub_dt(s: str | None) -> pd.Timestamp:
@@ -46,6 +51,7 @@ def load_frame(db_path: Path, topic_name: str, journal_groups: dict[str, list[st
         return pd.DataFrame(columns=COLUMNS)
 
     j2g = journal_to_group(journal_groups)
+    canon = journal_canonical(journal_groups)
     cutoff = ((today or date.today()) - timedelta(days=NEW_DAYS)).isoformat()
     records = []
     for r in rows:
@@ -53,20 +59,42 @@ def load_frame(db_path: Path, topic_name: str, journal_groups: dict[str, list[st
         pub_types = json.loads(r["pub_types"] or "[]")
         records.append({
             "id": r["id"], "pmid": r["pmid"], "doi": r["doi"], "title": r["title"],
-            "abstract": r["abstract"] or "", "journal": r["journal"] or "",
+            "abstract": r["abstract"] or "",
+            "journal": canon.get((r["journal"] or "").lower(), r["journal"] or ""),
             "group": j2g.get((r["journal"] or "").lower(), "기타"),
             "pub_date": r["pub_date"] or "", "pub_dt": pub_dt,
             "year": pub_dt.year if pd.notna(pub_dt) else None,
             "authors": json.loads(r["authors"] or "[]"), "mesh": json.loads(r["mesh"] or "[]"),
             "pub_types": pub_types, "is_review": is_review(pub_types),
-            "cited_by": r["cited_by"], "oa_url": r["oa_url"], "first_seen": r["first_seen"],
+            "cited_by": r["cited_by"], "oa_url": r["oa_url"],
+            "source": r["source"] or "pubmed", "openalex_id": r["openalex_id"],
+            "first_seen": r["first_seen"],
             "is_new": r["first_seen"] >= cutoff, "relevance": r["relevance"] or 0.0,
             "matched_terms": json.loads(r["matched_terms"] or "{}"),
             "status": r["mark_status"] or "", "note": r["mark_note"] or "",
         })
     df = pd.DataFrame.from_records(records, columns=COLUMNS)
     df["year"] = df["year"].astype("Int64")
+    df["cited_by"] = df["cited_by"].astype("Int64")
     return df
+
+
+SORTS = {
+    "관련도": (["relevance", "pub_dt"], [False, False]),
+    "최신순": (["pub_dt", "relevance"], [False, False]),
+    "인용 수": (["cited_by", "relevance"], [False, False]),
+}
+
+
+def sort_frame(df: pd.DataFrame, by: str) -> pd.DataFrame:
+    cols, asc = SORTS[by]
+    return df.sort_values(cols, ascending=asc, na_position="last", kind="stable")
+
+
+def citation_coverage(df: pd.DataFrame) -> tuple[int, int]:
+    """(papers with an OpenAlex record, papers with a DOI)."""
+    with_doi = df["doi"].notna() & (df["doi"] != "")
+    return int((with_doi & df["openalex_id"].notna()).sum()), int(with_doi.sum())
 
 
 REVIEW_PREFIX = "(review) "

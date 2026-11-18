@@ -60,7 +60,12 @@ def connect(path: Path) -> sqlite3.Connection:
 
 
 # Columns added after the first release: (table, column, type)
-_ADDED_COLUMNS = [("papers", "pub_types", "TEXT")]
+_ADDED_COLUMNS = [
+    ("papers", "pub_types", "TEXT"),
+    ("papers", "source", "TEXT"),          # 'pubmed' | 'openalex'
+    ("papers", "openalex_id", "TEXT"),
+    ("papers", "enriched_at", "TEXT"),     # last OpenAlex lookup (date)
+]
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -68,7 +73,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
         existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+    conn.execute("UPDATE papers SET source = 'pubmed' WHERE source IS NULL AND pmid IS NOT NULL")
     conn.commit()
+
+
+def set_enrichment(conn: sqlite3.Connection, paper_id: int, openalex_id: str | None, cited_by: int | None,
+                   oa_url: str | None, today: date | None = None) -> None:
+    conn.execute(
+        "UPDATE papers SET openalex_id = COALESCE(?, openalex_id), cited_by = COALESCE(?, cited_by), "
+        "oa_url = COALESCE(?, oa_url), enriched_at = ? WHERE id = ?",
+        (openalex_id, cited_by, oa_url, (today or date.today()).isoformat(), paper_id),
+    )
+
+
+def papers_with_doi(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT id, doi FROM papers WHERE doi IS NOT NULL").fetchall()
 
 
 def upsert_topic(conn: sqlite3.Connection, topic: Topic) -> int:
@@ -94,26 +113,33 @@ def upsert_paper(conn: sqlite3.Connection, s: Scored, today: date | None = None)
     seen = (today or date.today()).isoformat()
     row = None
     if p.doi:
-        row = conn.execute("SELECT id FROM papers WHERE doi = ?", (p.doi,)).fetchone()
-    if row is None:
-        row = conn.execute("SELECT id FROM papers WHERE pmid = ?", (p.pmid,)).fetchone()
+        row = conn.execute("SELECT id, source FROM papers WHERE doi = ?", (p.doi,)).fetchone()
+    if row is None and p.pmid:
+        row = conn.execute("SELECT id, source FROM papers WHERE pmid = ?", (p.pmid,)).fetchone()
 
     values = (p.pmid, p.doi, p.title, p.abstract, p.journal, p.pub_date,
               json.dumps(p.authors, ensure_ascii=False), json.dumps(p.mesh, ensure_ascii=False),
-              json.dumps(p.pub_types, ensure_ascii=False))
+              json.dumps(p.pub_types, ensure_ascii=False), p.source)
     if row is None:
         cur = conn.execute(
             "INSERT INTO papers (pmid, doi, title, abstract, journal, pub_date, authors, mesh, pub_types, "
-            "first_seen, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "source, first_seen, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (*values, seen, now),
         )
-        return cur.lastrowid, True
-    conn.execute(
-        "UPDATE papers SET pmid=?, doi=?, title=?, abstract=?, journal=?, pub_date=?, authors=?, "
-        "mesh=?, pub_types=?, updated_at=? WHERE id=?",
-        (*values, now, row["id"]),
-    )
-    return row["id"], False
+        paper_id, is_new = cur.lastrowid, True
+    elif p.source == "openalex" and row["source"] == "pubmed":
+        # Never replace a PubMed record (PMID, MeSH, publication types) with OpenAlex metadata.
+        paper_id, is_new = row["id"], False
+    else:
+        conn.execute(
+            "UPDATE papers SET pmid=COALESCE(?, pmid), doi=COALESCE(?, doi), title=?, abstract=?, journal=?, "
+            "pub_date=?, authors=?, mesh=?, pub_types=?, source=?, updated_at=? WHERE id=?",
+            (*values, now, row["id"]),
+        )
+        paper_id, is_new = row["id"], False
+    if p.openalex_id or p.cited_by is not None:
+        set_enrichment(conn, paper_id, p.openalex_id, p.cited_by, p.oa_url, today)
+    return paper_id, is_new
 
 
 def link(conn: sqlite3.Connection, topic_id: int, paper_id: int, s: Scored) -> None:

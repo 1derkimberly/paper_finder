@@ -11,7 +11,10 @@
 - Phase 2 (대시보드): 구현됨 — `app.py` (Streamlit). 주제 생성·키워드 편집·업데이트 실행·필터·차트·표/카드·읽음 표시·CSV/BibTeX
   - 키워드 확인 UI는 SPEC의 사이드바 대신 본문 상단 펼침 패널에 둠 (사이드바가 좁아서)
   - UI에서 새 주제를 만들면 키워드는 exact_phrases로 들어감. facet 자동 제안은 Phase 4(Claude API)
-- Phase 3~5: 미구현 (OpenAlex 보강, Claude API, 자동 업데이트)
+- Phase 3 (보강): 구현됨 — OpenAlex로 인용 수·무료 전문 링크(DOI 매칭), PubMed 수록이 부분적인 저널 보완 검색
+  - 검증(2026-11-18): DOI 매칭 174/174 (100%, 목표 90%). 보완 검색으로 npj Flex Electron·Nat Electron 논문 11건 추가
+  - OpenAlex는 키 없이 쓰면 IP당 하루 $0.10 공유 한도 + 검색 부하 시 429(30초 대기). 보완 검색이 실패해도 PubMed 결과는 저장되고 경고만 표시
+- Phase 4~5: 미구현 (Claude API, 자동 업데이트)
 
 ## 실행
 
@@ -22,6 +25,8 @@ copy .env.example .env   # NCBI_API_KEY, NCBI_EMAIL 채우기 (없어도 동작,
 .\.venv\Scripts\python -m paper_finder search transient_bioelectronics           # 검색 + 저장
 .\.venv\Scripts\python -m paper_finder search transient_bioelectronics --groups tier1_general tier1_bme --dry-run
 .\.venv\Scripts\python -m paper_finder list transient_bioelectronics             # 저장된 결과 보기
+.\.venv\Scripts\python -m paper_finder enrich                                      # 저장된 모든 논문의 인용 수 갱신
+# search 옵션: --no-openalex (PubMed만), --quiet (목록 출력 생략)
 .\.venv\Scripts\python -m streamlit run app.py                                   # 대시보드 (http://localhost:8501)
 .\.venv\Scripts\python -m pytest                                                  # 오프라인 단위 테스트 + 앱 스모크 테스트
 .\.venv\Scripts\python -m pytest -m network                                       # PubMed 실제 호출 검증 (SPEC §10)
@@ -32,13 +37,15 @@ copy .env.example .env   # NCBI_API_KEY, NCBI_EMAIL 채우기 (없어도 동작,
 ```
 config/topics.yaml     주제별 facet / exact_phrases / exclude_phrases
 config/journals.yaml   저널 그룹 (PubMed [ta] 약어)
+config/openalex_sources.yaml  PubMed 수록이 부분적인 저널 → OpenAlex 보완 검색 대상 (그룹·ISSN·OpenAlex ID)
 paper_finder/
   config.py    YAML·.env 로딩
   query.py     facet → PubMed 검색식 생성 (모든 용어에 [tiab])
   pubmed.py    E-utilities esearch/efetch 클라이언트 (rate limit, XML 파싱)
   process.py   dedupe → exclude 필터 → facet 매칭 점수
   db.py        SQLite 스키마 (SPEC §7) 와 upsert
-  pipeline.py  search → fetch → dedupe → filter → score → store
+  openalex.py  OpenAlex 클라이언트 (DOI 일괄 조회, 부울 검색, Retry-After 재시도)
+  pipeline.py  search → fetch → OpenAlex 보완 → dedupe → filter → score → enrich → store
   cli.py       argparse CLI (`python -m paper_finder`)
   dashboard_data.py  DB → DataFrame, 필터, 지표, 차트용 집계 (Streamlit 비의존, 테스트 대상)
   export.py    CSV (utf-8-sig, Excel 호환) / BibTeX
@@ -59,6 +66,8 @@ tests/                 pytest (network 마커는 실제 API 호출)
 - `first_seen` 은 처음 저장될 때만 기록하고 upsert 때 덮어쓰지 않는다 ("신규" 표시용).
 - 주제의 키워드가 바뀌면 그 주제의 `topic_papers` 링크를 지우고 다시 수집한다 (옛 검색식 결과가 섞이지 않게). `user_marks` 는 논문 단위라 유지.
 - 저자는 `"성, 이름"` 형식으로 저장한다 (BibTeX 호환).
+- OpenAlex 레코드는 PubMed 레코드를 덮어쓰지 않는다 (PMID·MeSH·논문 종류 보존). 같은 DOI면 인용 수·OA 링크만 갱신.
+- OpenAlex 검색은 어간 처리를 하므로 결과를 `process.matches_topic` 으로 다시 확인한다. 초록이 없는 레코드(Springer Nature 등은 OpenAlex에 초록 미제공)는 제목에 주제 용어가 하나라도 있으면 통과.
 - 리뷰 판별은 PubMed PublicationType 기준 (`Review`, `* Review`, `Meta-Analysis`) → 제목 앞 `(review)`. 새 컬럼은 `db._ADDED_COLUMNS` 에 추가하면 기존 DB에 자동 반영.
 - 대시보드에서 키워드를 저장하면 `topics.yaml` 이 다시 쓰여 머리말 외 주석은 사라진다.
 

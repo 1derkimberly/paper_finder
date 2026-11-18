@@ -1,0 +1,13 @@
+# PubMed 수록이 없거나 부분적인 저널 → OpenAlex에서 같은 키워드로 보완 검색 (SPEC §9 Phase 3).
+# 키: 대시보드에 표시할 저널 이름 (journals.yaml 표기와 같게)
+#   group: journals.yaml의 그룹 이름 (그 그룹을 선택했을 때만 검색)
+#   issn: 참고용. openalex_id가 없으면 ISSN으로 찾는다
+# 2026-11-18 확인: PubMed 수록 건수 npj Flex Electron 29건, Nat Electron 47건 (전체 기간)
+npj Flex Electron:
+  group: materials_devices
+  issn: 2397-4621
+  openalex_id: S4210223376
+Nat Electron:
+  group: tier1_bme
+  issn: 2520-1131
+  openalex_id: S4210239724

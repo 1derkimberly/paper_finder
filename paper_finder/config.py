@@ -35,7 +35,16 @@ class Settings:
     ncbi_api_key: str | None
     ncbi_email: str | None
     openalex_mailto: str | None
+    openalex_api_key: str | None
     anthropic_api_key: str | None
+
+
+@dataclass
+class OpenAlexSource:
+    name: str              # journal name shown in the dashboard (journals.yaml spelling)
+    group: str             # journals.yaml group it belongs to
+    issn: str | None = None
+    openalex_id: str | None = None
 
 
 def _read_yaml(path: Path) -> dict:
@@ -86,6 +95,19 @@ def load_journals(path: Path = CONFIG_DIR / "journals.yaml") -> dict[str, list[s
     return {group: [str(j) for j in journals] for group, journals in raw.items() if journals}
 
 
+def load_openalex_sources(path: Path = CONFIG_DIR / "openalex_sources.yaml") -> list[OpenAlexSource]:
+    if not path.exists():
+        return []
+    out = []
+    for name, body in _read_yaml(path).items():
+        body = body or {}
+        if not body.get("group") or not (body.get("issn") or body.get("openalex_id")):
+            raise ValueError(f"openalex source '{name}' needs group and issn or openalex_id")
+        out.append(OpenAlexSource(name=str(name), group=str(body["group"]),
+                                  issn=body.get("issn"), openalex_id=body.get("openalex_id")))
+    return out
+
+
 def load_settings() -> Settings:
     load_dotenv(ROOT / ".env")
 
@@ -96,5 +118,6 @@ def load_settings() -> Settings:
         ncbi_api_key=get("NCBI_API_KEY"),
         ncbi_email=get("NCBI_EMAIL"),
         openalex_mailto=get("OPENALEX_MAILTO"),
+        openalex_api_key=get("OPENALEX_API_KEY"),
         anthropic_api_key=get("ANTHROPIC_API_KEY"),
     )

@@ -41,6 +41,25 @@ def build_query(topic: Topic, journals: list[str], start: date, end: date) -> st
     return f"{topic_clause(topic)} AND {journal_clause(journals)} AND {date_clause(start, end)}"
 
 
+def _oa_term(t: str) -> str:
+    t = t.strip().replace('"', "")
+    return f'"{t}"' if (" " in t or "-" in t) else t
+
+
+def openalex_query(topic: Topic) -> str:
+    """Same facet logic for OpenAlex title_and_abstract.search (boolean, uppercase operators).
+    OpenAlex stems words, so results are re-checked with process.matches_topic."""
+    parts: list[str] = []
+    if topic.facets:
+        parts.append(" AND ".join("(" + " OR ".join(_oa_term(t) for t in v) + ")"
+                                  for v in topic.facets.values()))
+    if topic.exact_phrases:
+        parts.append(" OR ".join(_oa_term(p) if " " in p else f'"{p}"' for p in topic.exact_phrases))
+    if len(parts) == 1:
+        return parts[0]
+    return " OR ".join(f"({p})" for p in parts)
+
+
 def years_ago(end: date, years: int) -> date:
     try:
         return end.replace(year=end.year - years)

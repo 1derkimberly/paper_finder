@@ -98,7 +98,12 @@ USER_KEY: str = ROLE.key            # owner of new topics and user_marks.user_id
 IS_ADMIN = ROLE.is_admin
 CAN_MARK = True
 STORE = TopicStore(DB_PATH, TOPICS_PATH, use_db=AUTH or db.is_postgres(DB_PATH))
-LIMITS = load_limits(DB_PATH) if AUTH else Limits()
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_limits(target: str) -> Limits:
+    return load_limits(target)
+
+
+LIMITS = cached_limits(str(DB_PATH)) if AUTH else Limits()
 
 
 # ------------------------------------------------------------------ helpers
@@ -200,9 +205,15 @@ def judge_client() -> ClaudeClient | None:
     return _claude(load_settings().claude_judge_model or DEFAULT_JUDGE_MODEL)
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def _budget_note(kind: str, key: str, budget: float) -> str | None:
+    return budget_message(DB_PATH, Role(kind, key), LIMITS)
+
+
 def budget_note() -> str | None:
-    """Why Claude features are paused for this user right now (daily budget), or None."""
-    return budget_message(DB_PATH, ROLE, LIMITS) if AUTH else None
+    """Why Claude features are paused for this user right now (daily budget), or None. Re-checked every 30 s;
+    each Claude request also checks the budget itself."""
+    return _budget_note(ROLE.kind, USER_KEY, LIMITS.daily_budget_usd) if AUTH else None
 
 
 def run_update(topic: Topic, groups: dict[str, list[str]], years: int) -> None:
@@ -301,7 +312,13 @@ def refresh_citations() -> None:
 
 # ------------------------------------------------------------------ sidebar
 
-INFOS: dict[str, TopicInfo] = STORE.infos()
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_infos(version: str) -> dict[str, TopicInfo]:
+    """All topic definitions; refreshed when the DB stamp changes (topic edits, updates) or this session writes."""
+    return STORE.infos()
+
+
+INFOS: dict[str, TopicInfo] = cached_infos(data_version())
 # Public (admin) topics for everyone + the user's own; the admin sees every topic.
 VISIBLE = {n: i for n, i in INFOS.items() if IS_ADMIN or i.is_public or i.owner == USER_KEY}
 topics = {n: i.topic for n, i in VISIBLE.items()}
@@ -352,6 +369,7 @@ def create_topic(t: Topic) -> None:
         return
     try:
         STORE.save(t, owner=USER_KEY, title=title)
+        bump_data_version()
     except ValueError as e:
         st.error(str(e))
         return
@@ -518,6 +536,8 @@ def admin_page() -> None:
             if st.form_submit_button("저장", type="primary"):
                 save_limits(DB_PATH, Limits(budget, int(v_years), int(v_topics), int(u_topics), int(hours),
                                             int(max_years)))
+                cached_limits.clear()
+                _budget_note.clear()
                 st.success("저장했습니다.")
                 st.rerun()
         st.caption("관리자와 자동 업데이트는 한도에 막히지 않지만 사용량에는 집계됩니다. "
@@ -785,7 +805,8 @@ def keyword_editor() -> None:
             st.caption(f"위 검색식은 '{sel_groups[0]}' 그룹 예시입니다. 저널 그룹마다 따로 검색해 합칩니다.")
         if st.button("키워드 저장", disabled=edited.to_dict() == topic.to_dict()):
             try:
-                save_topic(edited, TOPICS_PATH)
+                STORE.save(edited)
+                bump_data_version()
             except ValueError as e:
                 st.error(str(e))
             else:

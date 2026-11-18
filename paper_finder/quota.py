@@ -37,9 +37,10 @@ def load_limits(target: db.DBTarget) -> Limits:
         return Limits()
     conn = db.connect(target)
     try:
+        stored = db.all_settings(conn)   # one query for every limit
         vals = {}
         for f in fields(Limits):
-            raw = db.get_setting(conn, f.name, str(DEFAULT_LIMITS[f.name]))
+            raw = stored.get(f.name, str(DEFAULT_LIMITS[f.name]))
             vals[f.name] = float(raw) if f.type in ("float", float) else int(float(raw))
         return Limits(**vals)
     finally:

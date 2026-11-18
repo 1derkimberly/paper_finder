@@ -99,6 +99,7 @@ tests/                 pytest (network 마커는 실제 API 호출)
 - `st.cache_data` 캐시 키(`data_version()`)에 DB 파일 수정 시각을 넣는다. 그래야 CLI·주간 자동 업데이트로 바뀐 DB가 켜져 있는 대시보드에 바로 보인다
 - 미리보기용 별도 데이터: `PAPER_FINDER_CONFIG`·`PAPER_FINDER_DB`·`PAPER_FINDER_REPORTS` 환경 변수로 다른 폴더를 가리킬 수 있다 (`.claude/launch.json` 의 dashboard-demo, 포트 8502)
 - 공개 배포([docs/DEPLOY.md](docs/DEPLOY.md)): Streamlit Community Cloud + Supabase Postgres + GitHub Actions(월·목 업데이트)
+  - 속도: Postgres 연결은 `psycopg_pool` 로 재사용(autocommit, `with conn:` 은 명시적 트랜잭션), `data_stamp`·설정은 한 번의 쿼리. 앱은 주제 목록·한도·예산 확인을 `st.cache_data` 로 캐시(DB 스탬프 30초 TTL + 세션 쓰기 시 bump)
   - `DATABASE_URL`(postgres://)이 있으면 Postgres, 없으면 SQLite. `db.Conn` 이 `?`→`%s` 변환, INSERT는 `RETURNING id`. Supabase는 transaction pooler(6543) + `prepare_threshold=None`
   - 배포 모드에선 주제 정의를 DB `topic_defs` 에 저장 (`topics_store.TopicStore`). 서비스는 주제 없이 시작한다 (topics.yaml을 복사하지 않음, 사용자가 직접 만듦)
   - secrets에 `[auth]` 가 있으면 구글 로그인(st.login). 역할(`quota.Role`): 방문자(anon:<세션>, 최근 1년·주제 1개·세션 한정), 로그인(이메일, 주제 3개), 관리자(`ADMIN_EMAILS`, 제한 없음 + ⚙ 관리 화면). 로컬(secrets 없음)은 관리자 1명

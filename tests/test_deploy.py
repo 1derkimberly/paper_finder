@@ -253,3 +253,15 @@ def test_empty_service_starts_with_new_topic(tmp_path, monkeypatch):
     assert at.sidebar.selectbox[0].options == ["＋ 새 주제 만들기"]
     assert at.title[0].value == "Paper Finder"
     assert "구글로 로그인" in [b.label for b in at.button]
+
+
+def test_admin_keyword_save_goes_to_db(tmp_path, monkeypatch):
+    at = _app(tmp_path, monkeypatch, "boss@x.com", admins="boss@x.com")
+    ms = next(m for m in at.multiselect if m.key == "exact_transient_bioelectronics")
+    ms.set_value(ms.value + ["soft bioresorbable implant"]).run()
+    next(b for b in at.button if b.label == "키워드 저장").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    conn = db.connect(tmp_path / "t.db")
+    saved = db.load_topic_defs(conn)["transient_bioelectronics"]
+    conn.close()
+    assert "soft bioresorbable implant" in saved.exact_phrases

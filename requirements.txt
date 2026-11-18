@@ -6,4 +6,5 @@ streamlit>=1.50
 pandas>=2.2
 anthropic>=2.10
 psycopg[binary]>=3.2   # Postgres (Supabase) when DATABASE_URL is set
+psycopg-pool>=3.2      # reuse Postgres connections
 Authlib>=1.3.2         # Google login (st.login) when deployed

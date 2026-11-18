@@ -128,8 +128,9 @@ def describe(target: DBTarget) -> str:
 class Conn:
     """sqlite3 / psycopg connection with one interface: execute(sql with ?), commit, `with conn:` = transaction."""
 
-    def __init__(self, raw: Any, pg: bool):
-        self.raw, self.pg = raw, pg
+    def __init__(self, raw: Any, pg: bool, pool: Any = None):
+        self.raw, self.pg, self.pool = raw, pg, pool
+        self._tx = None   # Postgres: explicit transaction for `with conn:` (connections are autocommit)
 
     def execute(self, sql: str, params: tuple | list = ()) -> Any:
         if not self.pg:
@@ -151,18 +152,31 @@ class Conn:
         return {d[0] for d in cur.description}
 
     def commit(self) -> None:
-        self.raw.commit()
+        if not (self.pg and self.raw.autocommit):
+            self.raw.commit()
 
     def rollback(self) -> None:
-        self.raw.rollback()
+        if not (self.pg and self.raw.autocommit):
+            self.raw.rollback()
 
     def close(self) -> None:
-        self.raw.close()
+        """SQLite: close. Postgres: end any open (read) transaction and hand the connection back to the pool."""
+        if self.pool is None:
+            self.raw.close()
+            return
+        self.pool.putconn(self.raw)
 
     def __enter__(self) -> Conn:
+        if self.pg and self.raw.autocommit:
+            self._tx = self.raw.transaction()
+            self._tx.__enter__()
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:
+        if self._tx is not None:
+            tx, self._tx = self._tx, None
+            tx.__exit__(exc_type, exc, tb)      # commit, or roll back on error
+            return False
         if exc_type is None:
             self.commit()
         else:
@@ -171,15 +185,39 @@ class Conn:
 
 
 _READY: set[str] = set()   # targets whose schema was checked in this process
+_POOLS: dict[str, Any] = {}
+
+
+def _pool(url: str) -> Any:
+    """One small connection pool per Postgres URL and process. Opening a TLS connection to the database costs
+    several round trips (0.2 s locally, ~0.7 s from a US server to Tokyo); a pooled one is reused."""
+    pool = _POOLS.get(url)
+    if pool is None:
+        from psycopg.rows import dict_row
+        from psycopg_pool import ConnectionPool
+        # prepare_threshold=None: works through Supabase's transaction pooler (port 6543)
+        # autocommit: plain reads need no BEGIN/ROLLBACK round trips; `with conn:` opens a real transaction.
+        pool = ConnectionPool(url, min_size=1, max_size=5, max_idle=300, open=True, timeout=30,
+                              check=ConnectionPool.check_connection,
+                              kwargs={"row_factory": dict_row, "prepare_threshold": None, "connect_timeout": 15,
+                                      "autocommit": True})
+        _POOLS[url] = pool
+        if len(_POOLS) == 1:
+            import atexit
+            atexit.register(close_pools)
+    return pool
+
+
+def close_pools() -> None:
+    for pool in _POOLS.values():
+        pool.close()
+    _POOLS.clear()
 
 
 def connect(target: DBTarget) -> Conn:
     if is_postgres(target):
-        import psycopg
-        from psycopg.rows import dict_row
-        # prepare_threshold=None: works through Supabase's transaction pooler (port 6543)
-        conn = Conn(psycopg.connect(target, row_factory=dict_row, prepare_threshold=None, connect_timeout=15),
-                    pg=True)
+        pool = _pool(target)
+        conn = Conn(pool.getconn(), pg=True, pool=pool)
     else:
         path = Path(target)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -221,11 +259,13 @@ def _ensure_schema(conn: Conn) -> None:
 
 
 def data_stamp(conn: Conn) -> str:
-    """Changes whenever an update or verdict lands (cache key for the dashboard)."""
-    r = conn.execute("SELECT COUNT(*) AS n, MAX(finished_at) AS t FROM runs").fetchone()
-    p = conn.execute("SELECT COUNT(*) AS n, MAX(updated_at) AS t FROM papers").fetchone()
-    t = conn.execute("SELECT COUNT(*) AS n, MAX(updated_at) AS t FROM topic_defs").fetchone()
-    return f"{r['n']}.{r['t']}.{p['n']}.{p['t']}.{t['n']}.{t['t']}"
+    """Changes whenever an update, verdict or topic edit lands (cache key for the dashboard). One round trip."""
+    r = conn.execute(
+        "SELECT (SELECT COUNT(*) FROM runs) AS rn, (SELECT MAX(finished_at) FROM runs) AS rt, "
+        "(SELECT COUNT(*) FROM papers) AS pn, (SELECT MAX(updated_at) FROM papers) AS pt, "
+        "(SELECT COUNT(*) FROM topic_defs) AS tn, (SELECT MAX(updated_at) FROM topic_defs) AS tt, "
+        "(SELECT COUNT(*) FROM topic_papers WHERE llm_verdict IS NOT NULL) AS vn").fetchone()
+    return ".".join(str(r[k]) for k in ("rn", "rt", "pn", "pt", "tn", "tt", "vn"))
 
 
 def set_enrichment(conn: Conn, paper_id: int, openalex_id: str | None, cited_by: int | None,
@@ -461,6 +501,10 @@ def spent_on(conn: Conn, day: date, exclude_roles: tuple[str, ...] = ()) -> floa
 def usage_rows(conn: Conn, since: date) -> list:
     return conn.execute("SELECT day, role, kind, model, user_key, input_tokens, output_tokens, cost "
                         "FROM api_usage WHERE day >= ? ORDER BY ts", (since.isoformat(),)).fetchall()
+
+
+def all_settings(conn: Conn) -> dict[str, str]:
+    return {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM app_settings").fetchall()}
 
 
 def get_setting(conn: Conn, key: str, default: str) -> str:

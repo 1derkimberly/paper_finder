@@ -11,3 +11,13 @@ Nat Electron:
   group: tier1_bme
   issn: 2520-1131
   openalex_id: S4210239724
+# 2026-11-19 확인: PubMed 2025년 13건 (부분 수록)
+Device:
+  group: nano_micro_devices
+  issn: 2666-9986
+  openalex_id: S4387290120
+# 2026-11-19 확인: PubMed 2025년 15건 (부분 수록)
+Chem Eng J:
+  group: materials_devices
+  issn: 1385-8947
+  openalex_id: S149937609

@@ -355,7 +355,8 @@ st.html("""<style>
 
 
 # journals.yaml lists groups from general to specific; the slider picks a contiguous span of them.
-GROUP_LABELS = {"tier1_general": "종합", "tier1_bme": "BME 상위", "materials_devices": "소재·소자"}
+GROUP_LABELS = {"tier1_general": "종합", "tier1_bme": "BME 상위", "materials_devices": "소재·소자",
+                "nano_micro_devices": "나노·마이크로소자", "neuro_bme": "신경·의공학"}
 
 
 def journal_range(groups: list[str]) -> list[str]:

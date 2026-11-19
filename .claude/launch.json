@@ -6,6 +6,18 @@
       "runtimeExecutable": ".venv\\Scripts\\python.exe",
       "runtimeArgs": ["-m", "streamlit", "run", "app.py", "--server.port", "8501", "--server.headless", "true"],
       "port": 8501
+    },
+    {
+      "name": "dashboard-demo",
+      "runtimeExecutable": ".venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "streamlit", "run", "app.py", "--server.port", "8502", "--server.headless", "true"],
+      "port": 8502,
+      "env": {
+        "DATABASE_URL": "",
+        "PAPER_FINDER_CONFIG": "C:\\Users\\1derk\\AppData\\Local\\Temp\\claude\\0392e088febe73da\\80b4bd11-9eed-4aea-a755-f56df480bf08\\scratchpad\\demo\\config",
+        "PAPER_FINDER_DB": "C:\\Users\\1derk\\AppData\\Local\\Temp\\claude\\0392e088febe73da\\80b4bd11-9eed-4aea-a755-f56df480bf08\\scratchpad\\demo\\papers.db",
+        "PAPER_FINDER_REPORTS": "C:\\Users\\1derk\\AppData\\Local\\Temp\\claude\\0392e088febe73da\\80b4bd11-9eed-4aea-a755-f56df480bf08\\scratchpad\\demo\\reports"
+      }
     }
   ]
 }

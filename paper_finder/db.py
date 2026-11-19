@@ -87,6 +87,14 @@ CREATE TABLE IF NOT EXISTS api_usage (          -- one row per Claude request (c
 CREATE TABLE IF NOT EXISTS app_settings (       -- limits the admin can change in the dashboard
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS feedback (           -- '의견 보내기' messages from the dashboard
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts        TEXT NOT NULL,
+    user_key  TEXT,            -- email / anon:<session> / '' (local or admin)
+    contact   TEXT,            -- optional reply address the sender typed
+    page      TEXT,            -- topic or page open when it was sent
+    message   TEXT NOT NULL
 )
 """
 
@@ -515,6 +523,22 @@ def get_setting(conn: Conn, key: str, default: str) -> str:
 def set_setting(conn: Conn, key: str, value: str) -> None:
     conn.execute("INSERT INTO app_settings (key, value) VALUES (?, ?) "
                  "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+
+
+def add_feedback(conn: Conn, user_key: str, message: str, contact: str = "", page: str = "",
+                 when: datetime | None = None) -> None:
+    when = when or datetime.now()
+    conn.execute("INSERT INTO feedback (ts, user_key, contact, page, message) VALUES (?, ?, ?, ?, ?)",
+                 (when.isoformat(timespec="seconds"), user_key, contact, page, message))
+
+
+def feedback_rows(conn: Conn, limit: int = 200) -> list:
+    return conn.execute("SELECT id, ts, user_key, contact, page, message FROM feedback "
+                        "ORDER BY ts DESC, id DESC LIMIT ?", (limit,)).fetchall()
+
+
+def delete_feedback(conn: Conn, ids: list[int]) -> int:
+    return sum(conn.execute("DELETE FROM feedback WHERE id = ?", (i,)).rowcount for i in ids)
 
 
 def size_bytes(conn: Conn, target: DBTarget) -> int | None:

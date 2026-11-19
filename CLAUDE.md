@@ -111,6 +111,7 @@ tests/                 pytest (network 마커는 실제 API 호출)
 - 테스트는 `tests/fixtures/topics.yaml` 을 쓴다 (conftest가 매 테스트 임시 config 폴더로 `CONFIG_DIR` 교체). 사용자의 `config/topics.yaml` 은 대시보드에서 바뀌므로 테스트가 기대면 안 된다
 - 주제 선택은 selectbox가 아니라 사이드바 popover 안의 버튼 줄(주제 | 휴지통 아이콘, 키 `pick_<ID>`·`delicon_<ID>`). 테스트는 `tests/app_helpers.py` 의 `menu`·`go` 사용
 - 오른쪽 위 계정 아이콘(popover): My page·로그아웃(바로 `st.logout`)·방문자는 로그인. My page(MY_PAGE) = 탭 [신규 논문 리포트 | 계정·개인정보]. 사이드바에는 리포트·로그아웃 없음 (방문자 로그인 버튼만)
+- 화면 왼쪽 맨 아래 고정 '의견 보내기' 버튼(컨테이너 key `feedbackbar`, CSS `position: fixed`) → `st.dialog` 입력창 → DB `feedback` 테이블(`db.add_feedback`). 관리 화면 '의견' 탭에서 읽고 삭제
 - 마지막 업데이트 정보는 주제 제목 줄 오른쪽. 저널 그룹은 `select_slider` 범위(종합 → 전문, journals.yaml 순서 = 일반→전문, 표시 이름 `GROUP_LABELS`)
 - 미리보기 dashboard-demo는 `DATABASE_URL=""` 로 SQLite 데모 DB만 쓴다 (`.env` 의 Supabase에 붙지 않게)
 - 주제 삭제(휴지통 아이콘 또는 관리 화면 → `st.dialog` 확인창의 '삭제'. 대기 중인 삭제는 `session_state["ask_delete"]`, 취소·삭제·닫기에서 지움): `topics.yaml` 항목·`topics`·`topic_papers`·`runs` 삭제. 어느 주제에도 안 속하게 된 논문은 지우되 `user_marks` 가 있는 논문은 남긴다. 리포트 파일은 둔다

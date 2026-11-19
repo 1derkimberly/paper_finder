@@ -351,6 +351,10 @@ st.html("""<style>
 /* account menu: icon at the right edge */
 .st-key-accountbar { align-items: flex-end; }
 .st-key-accountmenu button { min-height: 2rem; justify-content: flex-start; }
+/* '의견 보내기': pinned to the bottom-left corner of the window */
+.st-key-feedbackbar { position: fixed; left: 1rem; bottom: 1rem; z-index: 999991; width: auto !important; }
+.st-key-feedbackbar button { box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+[data-testid="stSidebarUserContent"] { padding-bottom: 4.5rem; }
 </style>""")
 
 
@@ -582,9 +586,9 @@ def admin_page() -> None:
     """Maintenance: cost, limits, every topic, update log, cleanup and health checks."""
     st.title("관리")
     st.caption("유지 보수 화면은 관리자에게만 보입니다.")
-    t_usage, t_limits, t_topics, t_runs, t_health = st.tabs(
+    t_usage, t_limits, t_topics, t_runs, t_feedback, t_health = st.tabs(
         [":material/payments: 사용량·비용", ":material/tune: 한도 설정", ":material/topic: 주제",
-         ":material/history: 업데이트 기록", ":material/health_and_safety: 정리·상태"])
+         ":material/history: 업데이트 기록", ":material/feedback: 의견", ":material/health_and_safety: 정리·상태"])
 
     # -------------------------------------------------- usage / cost
     with t_usage:
@@ -679,6 +683,29 @@ def admin_page() -> None:
         st.dataframe(runs.rename(columns={"topic": "주제", "started_at": "시작", "trigger": "실행", "kept": "저장",
                                           "new_count": "신규", "rejected": "관련 없음", "error": "오류"}),
                      hide_index=True, width="stretch")
+
+    # -------------------------------------------------- feedback
+    with t_feedback:
+        conn = db.connect(DB_PATH)
+        try:
+            fb = [dict(r) for r in db.feedback_rows(conn)]
+        finally:
+            conn.close()
+        if not fb:
+            st.info("받은 의견이 없습니다.")
+        for r in fb:
+            with st.container(border=True):
+                who = r["contact"] or ("방문자" if (r["user_key"] or "").startswith("anon:") else r["user_key"] or "관리자")
+                st.caption(f"{r['ts'].replace('T', ' ')[:16]} · {who}" + (f" · {r['page']}" if r["page"] else ""))
+                st.text(r["message"])
+                if st.button("삭제", key=f"fbdel_{r['id']}", type="tertiary", icon=":material/delete:"):
+                    conn = db.connect(DB_PATH)
+                    try:
+                        db.delete_feedback(conn, [r["id"]])
+                        conn.commit()
+                    finally:
+                        conn.close()
+                    st.rerun()
 
     # -------------------------------------------------- cleanup / health
     with t_health:
@@ -809,10 +836,43 @@ with corner.container(key="accountbar"):
             st.button("구글로 로그인", icon=":material/login:", key="login_btn", width="stretch", type="tertiary",
                       on_click=st.login)
 
+@st.dialog("의견 보내기")
+def feedback_dialog() -> None:
+    st.caption("불편한 점, 원하는 기능, 잘못 걸러진 논문 등 무엇이든 적어 주세요. 관리자만 읽습니다.")
+    with st.form("feedback_form", border=False):
+        msg = st.text_area("의견", key="fb_msg", height=140, max_chars=2000, label_visibility="collapsed",
+                           placeholder="예: 리뷰 논문만 따로 보는 필터가 있으면 좋겠어요.")
+        contact = st.text_input("답장 받을 연락처 (선택)", key="fb_contact", value=EMAIL or "", max_chars=200)
+        sent = st.form_submit_button("보내기", type="primary", icon=":material/send:")
+    if sent:
+        if not msg.strip():
+            st.warning("내용을 입력해 주세요.")
+            return
+        conn = db.connect(DB_PATH)
+        try:
+            db.add_feedback(conn, USER_KEY, msg.strip(), contact.strip(), topic_label(topic_name)
+                            if topic_name in OPTIONS + [MY_PAGE] else "")
+            conn.commit()
+        finally:
+            conn.close()
+        for k in ("fb_msg", "fb_contact"):
+            st.session_state.pop(k, None)
+        st.session_state["feedback_sent"] = True
+        st.rerun()
+
+
+with st.container(key="feedbackbar"):
+    if st.button("의견 보내기", icon=":material/feedback:", key="feedback_btn"):
+        st.session_state["feedback_open"] = True
+if st.session_state.pop("feedback_sent", False):
+    st.toast("의견을 보냈습니다. 고맙습니다!", icon=":material/check_circle:")
+
 if pending_delete := st.session_state.get("ask_delete"):
     confirm_delete(pending_delete)
 elif st.session_state.pop("limit_notice", False):
     limit_notice()
+elif st.session_state.pop("feedback_open", False):
+    feedback_dialog()
 
 if topic_name in (NEW_TOPIC, ADMIN_PAGE, MY_PAGE):
     with st.sidebar:

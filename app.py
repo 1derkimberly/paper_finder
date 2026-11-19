@@ -437,10 +437,11 @@ if topic_name not in OPTIONS + [MY_PAGE]:
 
 with st.sidebar:
     _mask = f"url({logo_uri()}) left center / contain no-repeat"
-    st.markdown(f"<div role='img' aria-label='NST Lab.' style='width:139px;height:41px;margin:.1rem 0 .5rem;"
+    st.markdown("<div style='display:flex;flex-wrap:wrap;align-items:center;gap:.3rem .5rem;margin:.1rem 0 .8rem'>"
+                f"<div role='img' aria-label='NST Lab.' style='flex:none;width:112px;height:33px;"
                 f"background-color:currentColor;-webkit-mask:{_mask};mask:{_mask}'></div>"
-                "<div style='font-size:1.6rem;font-weight:700;line-height:1.2;margin:0 0 .8rem'>"
-                "NST Paper Finder</div>", unsafe_allow_html=True)
+                "<div style='font-size:1.25rem;font-weight:700;line-height:1.1;white-space:nowrap'>"
+                "Paper Finder</div></div>", unsafe_allow_html=True)
     # A dropdown of rows (topic | delete icon): a selectbox cannot hold a button per option.
     st.caption("주제")
     # Label: the open topic; '비어있음' while no topic exists yet (the menu's own chevron marks it as a dropdown).

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import html
 import os
 import uuid
 from datetime import date
+from pathlib import Path
 
 import altair as alt
 import pandas as pd
@@ -113,7 +115,14 @@ LIMITS = cached_limits(str(DB_PATH)) if AUTH else Limits()
 def bar_color() -> str:
     # Single-series bars: one hue, stepped for the active theme.
     theme = getattr(getattr(st, "context", None), "theme", None)
-    return "#3987e5" if getattr(theme, "type", None) == "dark" else "#2a78d6"
+    return "#7072f2" if getattr(theme, "type", None) == "dark" else "#5b5bd6"
+
+
+@st.cache_resource
+def logo_uri() -> str:
+    # White-on-transparent PNG, used as a CSS mask so it takes the theme's text colour (never pure black/white).
+    data = (Path(__file__).parent / "assets" / "nst_logo.png").read_bytes()
+    return "data:image/png;base64," + base64.b64encode(data).decode()
 
 
 def bar_chart(df: pd.DataFrame, x: str, y: str, horizontal: bool = False) -> alt.Chart:
@@ -427,7 +436,10 @@ if topic_name not in OPTIONS + [MY_PAGE]:
     topic_name = OPTIONS[0]
 
 with st.sidebar:
-    st.markdown("<div style='font-size:1.6rem;font-weight:700;line-height:1.2;margin:.2rem 0 .8rem'>"
+    _mask = f"url({logo_uri()}) left center / contain no-repeat"
+    st.markdown(f"<div role='img' aria-label='NST Lab.' style='width:139px;height:41px;margin:.1rem 0 .5rem;"
+                f"background-color:currentColor;-webkit-mask:{_mask};mask:{_mask}'></div>"
+                "<div style='font-size:1.6rem;font-weight:700;line-height:1.2;margin:0 0 .8rem'>"
                 "NST Paper Finder</div>", unsafe_allow_html=True)
     # A dropdown of rows (topic | delete icon): a selectbox cannot hold a button per option.
     st.caption("주제")

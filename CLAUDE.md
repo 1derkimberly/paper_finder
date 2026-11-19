@@ -95,7 +95,7 @@ tests/                 pytest (network 마커는 실제 API 호출)
 - 판정은 `llm_verdict IS NULL` 인 링크만 한다 (재검색해도 `link()` 가 판정을 보존). 키워드가 바뀌면 링크가 지워지므로 다시 판정된다.
 - Claude 판정은 업데이트당 최대 `MAX_JUDGE_PER_UPDATE`(300)건, 나머지는 다음 업데이트에서. 결과 1000건 초과면 '키워드가 너무 넓다' 경고 (대시보드 새 주제에서 단어 하나를 정확한 문구로 넣으면 수천 건이 걸림)
 - `.env` 는 `load_settings()` 호출마다 다시 읽고 `os.environ` 에 복사하지 않는다 (대시보드를 켠 채 키를 넣어도 반영). 실제 환경 변수가 있으면(빈 값 포함) 그쪽이 우선
-- 디자인: `.streamlit/config.toml` 테마(파란 강조색 #2a78d6 = 차트 색, Pretendard, light/dark 따로). 본문 = 헤더 → 필터 상자 → 지표 카드 4개 → [논문 | 동향] 탭, 논문은 카드 보기·최신순이 기본. '읽음' 카드는 흐리게(컨테이너 key `readcard_*` + CSS, 마우스를 올리면 선명). `use_container_width` 대신 `width="stretch"`
+- 디자인: `.streamlit/config.toml` 테마(인디고 강조색 #5b5bd6 / 다크 #7072f2 = 차트 색, 완전 흰색·검은색 대신 오프화이트·잉크, Pretendard, light/dark 따로). 사이드바 맨 위 로고 `assets/nst_logo.png`(흰색+투명)는 CSS mask + `currentColor` 라 테마 글자색을 따른다. 본문 = 헤더 → 필터 상자 → 지표 카드 4개 → [논문 | 동향] 탭, 논문은 카드 보기·최신순이 기본. '읽음' 카드는 흐리게(컨테이너 key `readcard_*` + CSS, 마우스를 올리면 선명). `use_container_width` 대신 `width="stretch"`
 - `st.cache_data` 캐시 키(`data_version()`)에 DB 파일 수정 시각을 넣는다. 그래야 CLI·주간 자동 업데이트로 바뀐 DB가 켜져 있는 대시보드에 바로 보인다
 - 미리보기용 별도 데이터: `PAPER_FINDER_CONFIG`·`PAPER_FINDER_DB`·`PAPER_FINDER_REPORTS` 환경 변수로 다른 폴더를 가리킬 수 있다 (`.claude/launch.json` 의 dashboard-demo, 포트 8502)
 - 공개 배포([docs/DEPLOY.md](docs/DEPLOY.md)): Streamlit Community Cloud + Supabase Postgres + GitHub Actions(월·목 업데이트)
